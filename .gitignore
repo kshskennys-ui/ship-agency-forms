@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+data/
+.analysis_*/
+.pytest_cache/
+*.db
+*.sqlite3
+frontend/node_modules/
+node_modules/
+*.inspect.ndjson
+qa/

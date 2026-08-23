@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>航次历史管理</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div><p class="eyebrow">SHIP AGENCY MVP</p><h1>航次历史管理</h1><p class="muted">航次记录始终绑定所属船舶，意外关闭后可以继续上一次操作。</p></div>
+      <a class="ghost button-link" href="/">返回业务首页</a>
+    </header>
+    <section class="card">
+      <div class="toolbar"><h2>航次历史记录</h2><span id="recordCount" class="status-chip"></span></div>
+      <div class="search-row"><input id="searchInput" placeholder="按船名、IMO、进港航次号或出港航次号查询" /><button id="refreshBtn" class="ghost">刷新列表</button></div>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>记录号</th><th>所属船舶</th><th>进港航次号</th><th>出港航次号</th><th>靠泊时间</th><th>离泊时间</th><th>最近操作</th><th>操作</th></tr></thead><tbody id="voyageTableBody"></tbody></table></div>
+      <p id="listMsg" class="message"></p>
+    </section>
+  </main>
+  <script src="/static/voyages.js?v=20260727-2"></script>
+</body>
+</html>

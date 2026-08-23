@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>船舶档案管理</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div><p class="eyebrow">SHIP AGENCY MVP</p><h1>船舶档案管理</h1><p class="muted">船舶基础资料集中维护，后续航次直接选择使用。</p></div>
+      <a class="ghost button-link" href="/">返回业务首页</a>
+    </header>
+    <section class="card">
+      <div class="toolbar"><h2>船舶档案列表</h2><span id="recordCount" class="status-chip"></span></div>
+      <div class="search-row"><input id="searchInput" placeholder="按 IMO、中文名、英文名或船公司查询" /><button id="refreshBtn" class="ghost">刷新列表</button></div>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>IMO</th><th>中文名</th><th>英文名</th><th>船籍</th><th>呼号</th><th>船公司</th><th>净/总吨位</th><th>操作</th></tr></thead><tbody id="vesselTableBody"></tbody></table></div>
+      <p id="listMsg" class="message"></p>
+    </section>
+    <section class="card">
+      <div class="toolbar"><h2 id="formTitle">新增船舶档案</h2><button id="resetBtn" class="ghost" type="button">清空表单</button></div>
+      <form id="vesselForm" class="form-grid">
+        <label>IMO<input name="imo" placeholder="7位IMO，建议填写" /></label>
+        <label>中文名<input name="chinese_name" /></label>
+        <label>英文名<input name="english_name" /></label>
+        <label>船籍<input name="nationality" /></label>
+        <label>呼号<input name="call_sign" /></label>
+        <label>船公司<input name="shipping_company" /></label>
+        <label>净吨位<input name="net_tonnage" type="number" /></label>
+        <label>总吨位<input name="gross_tonnage" type="number" /></label>
+        <label>MMSI<input name="mmsi" /></label>
+        <button class="primary" type="submit">保存档案</button>
+      </form>
+      <p id="formMsg" class="message"></p>
+    </section>
+  </main>
+  <script src="/static/vessels.js"></script>
+</body>
+</html>
