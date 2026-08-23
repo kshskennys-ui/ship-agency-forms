@@ -17,4 +17,14 @@ $env:PYTHONPATH='backend'
 
 当前实现：船舶档案、航次、`.xls/.xlsx` 船员名单导入、船员统计、换班记录、吨税申请数据保存、预报文本生成。
 
+## 界面截图
+
+![船舶档案管理](docs/screenshots/vessel-management.png)
+
+![业务表单首页](docs/screenshots/main-form.png)
+
+![固定格式文字提取](docs/screenshots/text-extraction.png)
+
+![航次历史管理](docs/screenshots/voyage-management.png)
+
 默认数据库是 `data/ship_agency.db`。后期切换 PostgreSQL 时，只需设置 `DATABASE_URL`，例如使用 `postgresql+psycopg://...`，业务接口不变。
