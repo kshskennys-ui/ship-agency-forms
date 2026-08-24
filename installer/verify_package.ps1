@@ -32,9 +32,9 @@ try {
     if (-not $healthy) {
         throw 'Packaged service did not start within 30 seconds.'
     }
-    $home = (Invoke-WebRequest -Uri 'http://127.0.0.1:18000/' -UseBasicParsing -TimeoutSec 5).Content
+    $homeHtml = (Invoke-WebRequest -Uri 'http://127.0.0.1:18000/' -UseBasicParsing -TimeoutSec 5).Content
     Write-Output ('PACKAGED_HEALTH=' + $response.Content)
-    Write-Output ('HOME_HAS_TITLE=' + ($home.Contains('Ship Agency')))
+    Write-Output ('HOME_HAS_TITLE=' + ($homeHtml.Contains('船代业务表单系统')))
 } finally {
     if ($process -and -not $process.HasExited) {
         Stop-Process -Id $process.Id -Force
