@@ -1,13 +1,10 @@
-from pathlib import Path
 import os
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
+from .paths import DATA_DIR
 
-ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = ROOT / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{(DATA_DIR / 'ship_agency.db').as_posix()}")
 
 

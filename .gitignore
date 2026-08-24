@@ -10,3 +10,8 @@ frontend/node_modules/
 node_modules/
 *.inspect.ndjson
 qa/
+health_*_preview.png
+installer/build/
+installer/staging/
+installer/release/
+installer/test-install-*/

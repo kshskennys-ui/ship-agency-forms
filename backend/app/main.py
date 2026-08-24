@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db
 from .models import CrewChangePerson, CrewManifest, CrewMember, Forecast, TonnageApplication, Vessel, Voyage
+from .paths import FRONTEND_DIR
 from .schemas import CrewChangeCreate, CrewChangePersonUpdate, TextExtractRequest, TonnageCreate, VesselCreate, VoyageCreate, VoyageUpdate
 from .services.forecast import generate_forecast
 from .services.importers import parse_crew_file
@@ -504,8 +505,10 @@ def create_forecast(voyage_id: int, db: Session = Depends(get_db)):
     vessel = db.get(Vessel, voyage.vessel_id)
     manifest = db.scalars(select(CrewManifest).where(CrewManifest.voyage_id == voyage_id).order_by(CrewManifest.version.desc())).first()
     crew = db.scalars(select(CrewMember).where(CrewMember.manifest_id == manifest.id)).all() if manifest else []
-    changes_exist = db.scalars(select(CrewChangePerson).where(CrewChangePerson.voyage_id == voyage_id)).first() is not None
-    content, missing = generate_forecast(vessel, voyage, crew, changes_exist)
+    changes = db.scalars(
+        select(CrewChangePerson).where(CrewChangePerson.voyage_id == voyage_id).order_by(CrewChangePerson.id)
+    ).all()
+    content, missing = generate_forecast(vessel, voyage, crew, changes)
     previous = db.scalars(select(Forecast).where(Forecast.voyage_id == voyage_id).order_by(Forecast.version.desc())).first()
     item = Forecast(voyage_id=voyage_id, version=(previous.version + 1 if previous else 1), content=content, missing_fields_json=json.dumps(missing, ensure_ascii=False))
     db.add(item)
@@ -513,20 +516,19 @@ def create_forecast(voyage_id: int, db: Session = Depends(get_db)):
     return {"content": content, "missing_fields": missing, "version": item.version}
 
 
-frontend_dir = Path(__file__).resolve().parents[2] / "frontend"
-app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 
 @app.get("/")
 def index():
-    return FileResponse(frontend_dir / "index.html")
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.get("/vessels")
 def vessels_page():
-    return FileResponse(frontend_dir / "vessels.html")
+    return FileResponse(FRONTEND_DIR / "vessels.html")
 
 
 @app.get("/voyages")
 def voyages_page():
-    return FileResponse(frontend_dir / "voyages.html")
+    return FileResponse(FRONTEND_DIR / "voyages.html")

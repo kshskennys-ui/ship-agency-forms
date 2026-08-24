@@ -33,14 +33,14 @@ function excelSerial(value) {
 
 function replaceCell(xml, address, value, valueType = "string") {
   const cellPattern = new RegExp(
-    "<c\\b[^>]*\\br=\"" + address + "\"[^>]*(?:/>|>[\\s\\S]*?</c>)",
+    "<c\\b[^>]*?\\br=\"" + address + "\"[^>]*?(?:/>|>[\\s\\S]*?</c>)",
   );
   const match = xml.match(cellPattern);
   if (!match) throw new Error(`Template cell ${address} was not found`);
 
   const original = match[0];
-  const openingTag = original.match(/^<c\b[^>]*>/)[0];
-  let newOpeningTag = openingTag.replace(/\s+t="[^"]*"/, "");
+  const openingTag = original.match(/^<c\b[^>]*?(?:\/>|>)/)[0];
+  let newOpeningTag = openingTag.replace(/\s+t="[^"]*"/, "").replace(/\/>$/, ">");
   let body;
   if (valueType === "number") {
     body = `<v>${value}</v>`;
@@ -55,12 +55,12 @@ function replaceCell(xml, address, value, valueType = "string") {
 
 function clearCell(xml, address) {
   const cellPattern = new RegExp(
-    "<c\\b[^>]*\\br=\"" + address + "\"[^>]*(?:/>|>[\\s\\S]*?</c>)",
+    "<c\\b[^>]*?\\br=\"" + address + "\"[^>]*?(?:/>|>[\\s\\S]*?</c>)",
   );
   const match = xml.match(cellPattern);
   if (!match) throw new Error("Template cell " + address + " was not found");
-  const openingTag = match[0].match(/^<c\b[^>]*>/)[0];
-  return xml.replace(cellPattern, openingTag.replace(/>$/, "/>"));
+  const openingTag = match[0].match(/^<c\b[^>]*?(?:\/>|>)/)[0];
+  return xml.replace(cellPattern, openingTag.replace(/\/>$/, ">").replace(/>$/, "/>"));
 }
 
 function writeString(xml, address, value) {
@@ -84,6 +84,20 @@ function removeColumns(xml, columns, newDimension) {
     return `<cols>${body.replace(trailingColumns, "")}</cols>`;
   });
   return xml;
+}
+
+function normalizeAgentPhoneLayout(xml) {
+  const mergeBlock = xml.match(/<mergeCells\b[^>]*>[\s\S]*?<\/mergeCells>/);
+  if (!mergeBlock) return xml;
+  let body = mergeBlock[0]
+    .replace(/<mergeCell\b[^>]*\bref="P14:U15"[^>]*\/\s*>/, "")
+    .replace(/<mergeCell\b[^>]*\bref="V14:X15"[^>]*\/\s*>/, "");
+  if (!/\bref="O14:U15"/.test(body)) {
+    body = body.replace("</mergeCells>", '<mergeCell ref="O14:U15"/></mergeCells>');
+  }
+  const count = (body.match(/<mergeCell\b/g) || []).length;
+  body = body.replace(/(<mergeCells\b[^>]*\bcount=")\d+("[^>]*>)/, `$1${count}$2`);
+  return xml.replace(mergeBlock[0], body);
 }
 
 const nationalityEnglish = {
@@ -128,6 +142,14 @@ const countryEnglish = {
 const englishPort = value => portEnglish[text(value).trim()] || text(value).trim();
 const englishCountry = value => countryEnglish[text(value).trim()] || text(value).trim();
 
+function berthPhase(value) {
+  const raw = text(value).trim();
+  const match = raw.match(/([一二三四五六七八九十百]+期|\d+期)\s*([A-Za-z])?/);
+  if (!match) return raw;
+  const side = match[2] ? match[2].toUpperCase() : (match[1] === "三期" ? "W" : "");
+  return `${match[1]}${side}`;
+}
+
 const vessel = payload.vessel || {};
 const voyage = payload.voyage || {};
 const crew = payload.crew || {};
@@ -136,7 +158,9 @@ const nationality = text(vessel.nationality);
 const nationalityEn = nationalityEnglish[nationality] || nationality;
 const previousPort = text(voyage.previous_port);
 const nextPort = text(voyage.next_port);
+const berth = berthPhase(voyage.berth);
 const localPort = text(extra.declaration_port || "南沙新港");
+const agentCompany = "广州港中联国际船务代理有限公司";
 const arrivalSerial = excelSerial(voyage.arrival_time);
 
 const zip = await JSZip.loadAsync(await fs.readFile(templatePath));
@@ -151,6 +175,7 @@ for (const sideCell of [
 }
 
 if (formType === "general") {
+  generalXml = normalizeAgentPhoneLayout(generalXml);
   generalXml = writeString(generalXml, "I6", vessel.chinese_name);
   generalXml = writeString(generalXml, "I7", vessel.english_name);
   generalXml = writeString(generalXml, "F8", nationality);
@@ -180,6 +205,13 @@ if (formType === "general") {
   generalXml = writeNumber(generalXml, "H24", crew.total_count ?? 0);
   generalXml = writeNumber(generalXml, "N24", crew.passenger_count ?? 0);
   generalXml = writeString(generalXml, "W25", crew.nationality_distribution);
+  // Do not carry personal contact data from the source workbook template.
+  generalXml = clearCell(generalXml, "P14");
+  generalXml = writeString(generalXml, "O12", agentCompany);
+  generalXml = clearCell(generalXml, "V12");
+  generalXml = clearCell(generalXml, "V14");
+  generalXml = writeNumber(generalXml, "O14", 39080621);
+  generalXml = writeString(generalXml, "K14", berth);
   generalXml = writeString(generalXml, "R26", vessel.call_sign);
   generalXml = writeString(generalXml, "R27", vessel.mmsi);
   generalXml = writeString(generalXml, "R28", vessel.shipping_company);
@@ -197,6 +229,8 @@ if (formType === "cargo") {
   cargoXml = writeString(cargoXml, "C8", nationality);
   cargoXml = writeString(cargoXml, "C9", nationalityEn);
   cargoXml = writeString(cargoXml, "E8", crew.captain);
+  cargoXml = writeString(cargoXml, "C26", `${agentCompany}：`);
+  cargoXml = clearCell(cargoXml, "D26");
 }
 
 zip.file("xl/worksheets/sheet5.xml", generalXml);

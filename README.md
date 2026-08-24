@@ -15,6 +15,16 @@ $env:PYTHONPATH='backend'
 
 桌面已提供“船代系统一键启动”快捷方式，双击即可启动服务并打开浏览器。
 
+## Windows 一键安装包
+
+在已配置开发环境的电脑上运行：
+
+```powershell
+.\installer\build_installer.ps1
+```
+
+安装包生成在 `installer/release/ShipAgencySetup.exe`。目标电脑无需安装 Python、Node.js 或 SQLite，安装后桌面会创建“船代业务系统”快捷方式。业务数据库保存在安装目录下的 `data` 文件夹，卸载程序默认保留该文件夹。
+
 当前实现：船舶档案、航次、`.xls/.xlsx` 船员名单导入、船员统计、换班记录、吨税申请数据保存、预报文本生成。
 
 ## 界面截图

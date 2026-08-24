@@ -12,13 +12,17 @@ from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Pt
 
+from ..paths import EXPORT_DIR, HELPER_DIR, TEMPLATE_DIR
+from .forecast import format_crew_change
 
-ROOT = Path(__file__).resolve().parents[3]
-TEMPLATE_DIR = ROOT / "templates"
-EXPORT_DIR = ROOT / "data" / "exports"
-EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+def _helper_path(name):
+    packaged = HELPER_DIR / name
+    return packaged if packaged.exists() else Path(__file__).with_name(name)
 
 
 def _text(value):
@@ -37,12 +41,18 @@ def _flight_time(value):
     return value.strftime("%m/%d %H：%M") if value else ""
 
 
+def _berth_phase(value):
+    raw = _text(value).strip()
+    match = re.search(r"([一二三四五六七八九十百]+期|\d+期)", raw)
+    return match.group(1) if match else raw
+
+
 def export_inbound_form(vessel, voyage, crew, form_type):
     """Export the selected inbound Excel form from the supplied workbook template."""
     extra = json.loads(voyage.extra_json or "{}")
     vessel_extra = json.loads(vessel.extra_json or "{}")
     nationality_counts = Counter(person.nationality or "待人工填写" for person in crew)
-    nationality_distribution = "、".join(
+    nationality_distribution = "\n".join(
         f"{nationality}{count}名" for nationality, count in nationality_counts.items()
     )
     payload = {
@@ -67,6 +77,7 @@ def export_inbound_form(vessel, voyage, crew, form_type):
             "inbound_voyage_no": voyage.inbound_voyage_no,
             "outbound_voyage_no": voyage.outbound_voyage_no,
             "arrival_time": voyage.arrival_time.isoformat() if voyage.arrival_time else None,
+            "berth": _berth_phase(voyage.berth),
             "previous_port": voyage.previous_port,
             "next_port": voyage.next_port,
             "next_port_country": voyage.next_port_country,
@@ -81,7 +92,7 @@ def export_inbound_form(vessel, voyage, crew, form_type):
     }
     bundled_node = Path(r"C:\Users\UA\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
     node_path = os.getenv("SHIP_AGENCY_NODE") or (str(bundled_node) if bundled_node.exists() else None) or shutil.which("node")
-    helper = Path(__file__).with_name("inbound_forms_exporter.mjs")
+    helper = _helper_path("inbound_forms_exporter.mjs")
     template = TEMPLATE_DIR / "inbound_forms_template.xlsx"
     label = "强文献总申" if form_type == "general" else "海关货申"
     output = EXPORT_DIR / f"{label}_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.xlsx"
@@ -122,6 +133,73 @@ def _set_paragraph_text(paragraph, text):
             run.text = ""
     else:
         paragraph.add_run(text)
+
+
+def _set_paragraph_text_preserve_images(paragraph, text):
+    """Replace visible text without deleting legacy VML images in the paragraph."""
+    image_runs = [run for run in paragraph.runs if "w:pict" in run._r.xml or "w:drawing" in run._r.xml]
+    if not image_runs:
+        _set_paragraph_text(paragraph, text)
+        return
+    text_runs = [run for run in paragraph.runs if run not in image_runs]
+    target = next((run for run in reversed(text_runs) if run.text.strip()), None)
+    if target is None:
+        target = text_runs[-1] if text_runs else paragraph.add_run()
+    target.text = text
+
+
+def _set_customs_agent_identity(document, company, company_en):
+    """Replace the sample company identity in the customs template header/body."""
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if text == "示例船务代理有限公司":
+            _set_paragraph_text_preserve_images(paragraph, company)
+        elif text.lower() == "example shipping agency co., ltd.":
+            _set_paragraph_text(paragraph, company_en)
+    for section in document.sections:
+        for paragraph in (*section.header.paragraphs, *section.footer.paragraphs):
+            text = paragraph.text.strip()
+            if text == "示例船务代理有限公司":
+                _set_paragraph_text_preserve_images(paragraph, company)
+            elif text.lower() == "example shipping agency co., ltd.":
+                _set_paragraph_text(paragraph, company_en)
+
+
+def _set_customs_header(document, company, company_en, address_zh, address_en, phone, fax, email):
+    """Apply the actual agency letterhead from the approved customs example."""
+    header_values = {
+        # Paragraph 0 already contains the leading spacing in its separate
+        # text run next to the Logo; keep that run intact.
+        0: company,
+        1: f"      {company_en} ",
+        3: f"{address_zh} ",
+        4: address_en,
+        5: f"电话(Tel):86-020-{phone}    传真(Fax):86-020-{fax}   E-mail:{email} ",
+    }
+    for index, value in header_values.items():
+        if index < len(document.paragraphs):
+            _set_paragraph_text_preserve_images(document.paragraphs[index], value)
+
+
+def _apply_table_borders(table):
+    """Ensure every cell in a generated crew table has the visible template grid."""
+    for row in table.rows:
+        for cell in row.cells:
+            tc_pr = cell._tc.get_or_add_tcPr()
+            borders = tc_pr.first_child_found_in("w:tcBorders")
+            if borders is None:
+                borders = OxmlElement("w:tcBorders")
+                tc_pr.append(borders)
+            for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+                tag = qn(f"w:{edge}")
+                element = borders.find(tag)
+                if element is None:
+                    element = OxmlElement(f"w:{edge}")
+                    borders.append(element)
+                element.set(qn("w:val"), "single")
+                element.set(qn("w:sz"), "4")
+                element.set(qn("w:space"), "0")
+                element.set(qn("w:color"), "000000")
 
 
 def _crew_document_type(person):
@@ -259,17 +337,13 @@ def export_border_inspection(vessel, voyage, crew, changes):
     """Export the border-inspection procedures sheet while preserving its source layout."""
     bundled_node = Path(r"C:\Users\UA\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
     node_path = os.getenv("SHIP_AGENCY_NODE") or (str(bundled_node) if bundled_node.exists() else None) or shutil.which("node")
-    helper = Path(__file__).with_name("border_inspection_exporter.mjs")
+    helper = _helper_path("border_inspection_exporter.mjs")
     template = TEMPLATE_DIR / "border_inspection_procedures_template.xlsx"
     output = EXPORT_DIR / f"边检手续表_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.xlsx"
     document_counts = _border_document_counts(crew)
     female_count = sum(1 for person in crew if _text(person.gender).strip() in {"女", "female", "f"})
     current_change = bool(changes)
-    change_names = []
-    for person in changes:
-        direction = "上船" if person.direction == "up" else "下船"
-        change_names.append(f"{direction}{person.name}")
-    change_summary = "；".join(change_names)
+    change_summary = format_crew_change(changes) if current_change else ""
     ports = [value for value in [voyage.previous_port, "南沙", voyage.next_port] if value]
     payload = {
         "vessel": {
@@ -294,7 +368,7 @@ def export_border_inspection(vessel, voyage, crew, changes):
             "current_summary": change_summary,
             "has_domestic": False,
             "domestic_summary": "",
-            "other_summary": "本港有船员更动" if current_change else "本港无船员更动",
+            "other_summary": "",
         },
     }
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as payload_file:
@@ -321,7 +395,7 @@ def export_border_inspection(vessel, voyage, crew, changes):
 def export_tonnage(vessel, voyage, application):
     bundled_node = Path(r"C:\Users\UA\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
     node_path = os.getenv("SHIP_AGENCY_NODE") or (str(bundled_node) if bundled_node.exists() else None) or shutil.which("node")
-    helper = Path(__file__).with_name("tonnage_exporter.mjs")
+    helper = _helper_path("tonnage_exporter.mjs")
     template = TEMPLATE_DIR / "tonnage_template.xlsx"
     duration_label = {30: "三十天期（30days）", 90: "九十天期（90days）", 365: "一年期（1year）"}.get(application.duration_days, "待选择")
     output = EXPORT_DIR / f"tonnage_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.xlsx"
@@ -402,7 +476,7 @@ def export_health_declaration(vessel, voyage, crew):
     }
     bundled_node = Path(r"C:\Users\UA\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
     node_path = os.getenv("SHIP_AGENCY_NODE") or (str(bundled_node) if bundled_node.exists() else None) or shutil.which("node")
-    helper = Path(__file__).with_name("health_declaration_exporter.mjs")
+    helper = _helper_path("health_declaration_exporter.mjs")
     template = TEMPLATE_DIR / "health_declaration_template.xlsx"
     output = EXPORT_DIR / f"health_declaration_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.xlsx"
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as payload_file:
@@ -469,7 +543,8 @@ def export_crew_change(vessel, voyage, people):
                 run.font.size = Pt(10)
     down = [p for p in people if p.direction == "down"]
     up = [p for p in people if p.direction == "up"]
-    narrative = f"因船员有离船公休和登轮接班需求，现为{len(down)}名船员申请办理船员离船公休和登轮接班手续（{len(up)}上{len(down)}下），{_cn_time(voyage.arrival_time)}过船员通道，我司承诺船员健康情况正常，船员上下轮均不携带违法违规物品。"
+    total_change = len(up) + len(down)
+    narrative = f"因船员有离船公休和登轮接班需求，现为{total_change}名船员申请办理船员离船公休和登轮接班手续（{len(up)}上{len(down)}下），{_cn_time(voyage.arrival_time)}过船员通道，我司承诺船员健康情况正常，船员上下轮均不携带违法违规物品。"
     for cell in info.rows[4].cells:
         cell.text = narrative
     up_table = document.tables[1]
@@ -495,6 +570,21 @@ def export_crew_change_customs(vessel, voyage, people):
     document = Document(TEMPLATE_DIR / "customs_crew_change_template.docx")
     extra = json.loads(voyage.extra_json or "{}")
     agent_company = extra.get("agent_company", "广州港中联国际船务代理有限公司")
+    agent_company_en = extra.get(
+        "agent_company_en",
+        "Guangzhou Port Unitrans Agency Co., Ltd.",
+    )
+    agent_address_zh = extra.get(
+        "agent_address_zh",
+        "中国 广州 南沙区万顷沙龙穴岛 口岸大厦17楼  邮编:511462",
+    )
+    agent_address_en = extra.get(
+        "agent_address_en",
+        "Floor17,Kouan Building,Longxue Islan,Nansha District,Guangzhou,P.R.C.",
+    )
+    agent_phone = extra.get("agent_phone", "39080621")
+    agent_fax = extra.get("agent_fax", "34660550")
+    agent_email = extra.get("agent_email", "nsa.shipping@unitrans-agency.com")
     agent_name = extra.get("agent_name", "")
     agent_contact = extra.get("agent_contact", "")
     ship_type = extra.get("ship_type", "集装箱货船")
@@ -505,6 +595,17 @@ def export_crew_change_customs(vessel, voyage, people):
     english_name = _text(vessel.english_name)
     up = [p for p in people if p.direction == "up"]
     down = [p for p in people if p.direction == "down"]
+    _set_customs_agent_identity(document, agent_company, agent_company_en)
+    _set_customs_header(
+        document,
+        agent_company,
+        agent_company_en,
+        agent_address_zh,
+        agent_address_en,
+        agent_phone,
+        agent_fax,
+        agent_email,
+    )
 
     title = next((p for p in document.paragraphs if "换班申请" in p.text), None)
     if title:
@@ -576,6 +677,7 @@ def export_crew_change_customs(vessel, voyage, people):
             ]
             for cell, value in zip(table.rows[index].cells, values):
                 cell.text = _text(value)
+        _apply_table_borders(table)
 
     output = EXPORT_DIR / f"crew_change_customs_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.docx"
     document.save(output)

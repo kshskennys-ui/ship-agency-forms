@@ -8,6 +8,11 @@ function text(value) {
   return value === null || value === undefined ? "" : String(value);
 }
 
+function berthPhase(value) {
+  const match = text(value).trim().match(/([一二三四五六七八九十百]+期|\d+期)/);
+  return match ? match[1] : text(value);
+}
+
 function escapeXml(value) {
   return text(value)
     .replace(/&/g, "&amp;")
@@ -65,7 +70,7 @@ const values = {
   B10: changes.has_domestic ? "有" : "无",
   D10: text(changes.domestic_summary),
   B12: text(voyage.port_sequence),
-  B13: text(voyage.berth),
+  B13: berthPhase(voyage.berth),
   B15: text(changes.other_summary),
 };
 
