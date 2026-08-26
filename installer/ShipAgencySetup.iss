@@ -1,14 +1,19 @@
 #define MyAppName "船代业务系统"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 
 [Setup]
 AppId={{A0F5C4C4-90B0-47E4-9B26-9E5B3DB2E2A7}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher=Ship Agency
+Password={#MyPassword}
+Encryption=yes
 DefaultDirName={localappdata}\ShipAgencyForms
 DefaultGroupName={#MyAppName}
 PrivilegesRequired=lowest
+CloseApplications=yes
+CloseApplicationsFilter=ShipAgencyServer.exe
+RestartApplications=no
 OutputDir=release
 OutputBaseFilename=ShipAgencySetup
 Compression=lzma2

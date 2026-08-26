@@ -12,6 +12,10 @@ $workRoot = Join-Path $buildRoot 'pyinstaller-work'
 $staging = Join-Path $PSScriptRoot 'staging'
 $release = Join-Path $PSScriptRoot 'release'
 
+if (-not $env:SHIP_AGENCY_INSTALL_PASSWORD) {
+    throw '未设置安装包密码，请先设置环境变量 SHIP_AGENCY_INSTALL_PASSWORD。'
+}
+
 if (-not (Test-Path -LiteralPath $python)) {
     throw "未找到项目虚拟环境：$python"
 }
@@ -65,7 +69,26 @@ if (-not (Test-Path -LiteralPath $nodeExe)) {
 Copy-Item -LiteralPath $nodeExe -Destination (Join-Path $nodeStage 'node.exe') -Force
 $nodeModuleStage = Join-Path $staging 'node_modules'
 New-Item -ItemType Directory -Path $nodeModuleStage -Force | Out-Null
-foreach ($package in @('jszip', '@oai')) {
+# JSZip is a CommonJS package and its runtime dependencies are not bundled into
+# jszip itself. Keep this explicit list so the installed app works on a clean
+# computer without relying on a developer machine's node_modules directory.
+$nodePackages = @(
+    'jszip',
+    'lie',
+    'pako',
+    'readable-stream',
+    'setimmediate',
+    'immediate',
+    'core-util-is',
+    'inherits',
+    'isarray',
+    'process-nextick-args',
+    'safe-buffer',
+    'string_decoder',
+    'util-deprecate',
+    '@oai'
+)
+foreach ($package in $nodePackages) {
     $sourcePackage = Join-Path (Join-Path $repo 'node_modules') $package
     if (-not (Test-Path -LiteralPath $sourcePackage)) {
         throw "缺少 Node.js 导出依赖：$sourcePackage"
@@ -85,5 +108,5 @@ if (-not $iscc) {
     exit 0
 }
 
-& $iscc $PSScriptRoot\ShipAgencySetup.iss
+& $iscc "/DMyPassword=$env:SHIP_AGENCY_INSTALL_PASSWORD" $PSScriptRoot\ShipAgencySetup.iss
 Write-Output "INSTALLER=$release\ShipAgencySetup.exe"

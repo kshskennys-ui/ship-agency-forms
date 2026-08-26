@@ -150,14 +150,23 @@ def generate_forecast(vessel, voyage, crew, crew_changes) -> tuple[str, list[str
     female_count = gender.get("女", 0)
     female_text = "无女性" if female_count == 0 else f"其中女性{female_count}名"
     crew_text = format_crew_change(crew_changes)
+    inspection_text = "系统中控" if getattr(voyage, "customs_inspection", False) else "系统允许放行"
+    forecast_notes = [inspection_text]
+    if crew_changes:
+        change_text = format_crew_change(crew_changes)
+        if change_text != "无船员更动":
+            forecast_notes.append(change_text)
+    opening_note = f"（{'，'.join(forecast_notes)}）"
     subject = f"{nationality}籍“{chinese_name}/{vessel.english_name or '[待人工填写]'}”"
     first = (
-        f"广州港中联大船{entry}信息预报：{subject}，计划于{fmt_time(voyage.arrival_time)}靠泊{berth}"
+        f"{opening_note}广州港中联大船{entry}信息预报：{subject}，计划于{fmt_time(voyage.arrival_time)}靠泊{berth}"
         f"【该轮于{fmt_time(voyage.previous_port_departure_time)}从{previous}驶来，"
         f"计划于{fmt_time(voyage.departure_time)}离泊，航线：{previous}-南沙-{next_port}，"
         f"IMO：{imo}，船员共{count}名，{nat_text}，{female_text}，无枪弹，{crew_text}"
         f"（该轮途经{previous}-南沙-{next_port}，船员身体状况正常）】广州港中联"
     )
     phase = "一期" if "一期" in (voyage.berth or "") else "二期" if "二期" in (voyage.berth or "") else "三期" if "三期" in (voyage.berth or "") else "待确认码头"
-    second = f"{phase}，{entry}，{chinese_name}，{fmt_time(voyage.arrival_time)}--{fmt_time(voyage.departure_time)}，{nationality}籍，{previous}-南沙-{next_port}，{imo}。"
+    short_change = crew_text.removeprefix("本港") if crew_changes else ""
+    change_suffix = f"，{short_change}" if short_change else ""
+    second = f"{phase}，{entry}，{chinese_name}，{fmt_time(voyage.arrival_time)}--{fmt_time(voyage.departure_time)}，{nationality}籍，{previous}-南沙-{next_port}{change_suffix}，{imo}。"
     return f"{first}\n\n{second}", sorted(set(missing))

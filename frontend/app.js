@@ -14,25 +14,59 @@ function normalizeDateTimeInput(value) {
   const pad = number => String(number).padStart(2, '0');
   return `${yearNumber}-${pad(monthNumber)}-${pad(dayNumber)}T${pad(hourNumber)}:${pad(minuteNumber)}${second ? `:${pad(secondNumber)}` : ''}`;
 }
+function normalizeDateInput(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  let match = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (!match) match = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (!match) return raw;
+  const [, year, month, day] = match;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (date.getUTCFullYear() !== Number(year) || date.getUTCMonth() !== Number(month) - 1 || date.getUTCDate() !== Number(day)) return raw;
+  return `${year}-${String(Number(month)).padStart(2, '0')}-${String(Number(day)).padStart(2, '0')}`;
+}
+function bindDateInput(selector) {
+  document.querySelectorAll(selector).forEach(input => {
+    const normalize = () => {
+      const value = normalizeDateInput(input.value);
+      if (/^\d{8}$/.test(input.value.trim()) && value !== input.value.trim()) input.value = value;
+    };
+    input.addEventListener('input', normalize);
+    input.addEventListener('blur', normalize);
+    input.addEventListener('change', normalize);
+  });
+}
 let currentVoyageId = null;
+let voyageDirty = false;
 let currentCrew = [];
 let imoLookupTimer = null;
 let savedCrewChanges = [];
 let pendingDownCrew = [];
 let pendingUpCrew = [];
+let temporaryEntryApplicants = [];
+let exitStampApplicants = [];
 let editingDownChangeId = null;
 let editingUpChangeId = null;
 let currentVoyages = [];
 let currentVessels = [];
+let lockedVesselId = null;
+let isNewVesselMode = false;
 let editingVoyageId = null;
 let parsedVesselTextExtraction = null;
 let parsedVoyageTextExtraction = null;
 let extractedVesselExtra = {};
 let extractedVoyageExtra = {};
-const requestedVoyageId = Number(new URLSearchParams(window.location.search).get('voyage')) || null;
+let requestedVoyageId = Number(new URLSearchParams(window.location.search).get('voyage')) || null;
 
 function setMsg(id, text, error = false) {
   const node = $(id); node.textContent = text; node.className = `message ${error ? 'error' : 'success'}`;
+}
+
+function updateVesselFormMode() {
+  const form = $('vesselForm');
+  const editable = isNewVesselMode;
+  for (const control of form.querySelectorAll('input, button[type="submit"]')) control.disabled = !editable;
+  $('newVesselBtn').textContent = editable ? '取消新建船舶' : '新建船舶';
 }
 
 function voyageFormDateTime(value) {
@@ -41,14 +75,14 @@ function voyageFormDateTime(value) {
 
 function fillVoyageForm(voyage) {
   const form = $('voyageForm');
-  $('vesselSearch').value = '';
-  renderVesselOptions();
   for (const key of ['vessel_id', 'inbound_voyage_no', 'outbound_voyage_no', 'berth', 'previous_port', 'previous_port_country', 'next_port', 'next_port_country', 'route', 'entry_type']) {
     if (form.elements[key]) form.elements[key].value = voyage[key] ?? '';
   }
   for (const key of ['arrival_time', 'departure_time', 'previous_port_departure_time']) {
     if (form.elements[key]) form.elements[key].value = voyageFormDateTime(voyage[key]);
   }
+  if (form.elements.customs_inspection) form.elements.customs_inspection.checked = Boolean(voyage.customs_inspection);
+  updateCustomsInspectionText();
   syncVesselSearch(voyage.vessel_id);
   const vessel = currentVessels.find(item => item.id === Number(voyage.vessel_id));
   if (vessel) {
@@ -64,6 +98,38 @@ function vesselDisplay(vessel) {
 function syncVesselSearch(vesselId) {
   const vessel = currentVessels.find(item => item.id === Number(vesselId));
   if ($('vesselSearch')) $('vesselSearch').value = vessel ? vesselDisplay(vessel) : '';
+}
+
+function selectedVessel() {
+  const id = Number($('vesselSelect')?.value);
+  return currentVessels.find(item => item.id === id) || null;
+}
+
+function updateToolAvailability() {
+  const enabled = Boolean(currentVoyageId);
+  for (const id of ['crewFile', 'forecastBtn', 'summaryBtn', 'strongGeneralBtn', 'customsCargoBtn', 'tonnageBtn', 'crewChangeBtn', 'crewChangeCustomsBtn', 'healthDeclarationBtn', 'outerFieldReceiptBtn', 'borderInspectionBtn', 'maritimePreapprovalBtn']) {
+    if ($(id)) $(id).disabled = !enabled;
+  }
+}
+
+function updateVesselLockUI() {
+  const vessel = currentVessels.find(item => item.id === Number(lockedVesselId));
+  const selected = selectedVessel();
+  const hasVessel = Boolean(vessel);
+  $('mainWorkspaceGrid').classList.toggle('vessel-locked', hasVessel);
+  $('vesselSearch').disabled = false;
+  $('vesselSelect').disabled = !currentVessels.length;
+  $('newVoyageBtn').disabled = false;
+  if (currentVoyageId) {
+    // 保留历史航次恢复时的说明，不用船舶选择状态干预用户切换。
+  } else {
+    $('voyageResumeMsg').textContent = hasVessel
+      ? '已选择船舶，请填写新航次或从下方选择该船历史航次。'
+      : '请先在左侧船舶档案中选择船舶。';
+  }
+  const voyageForm = $('voyageForm');
+  for (const control of voyageForm.querySelectorAll('input:not([type="hidden"]), select, button')) control.disabled = !hasVessel;
+  updateToolAvailability();
 }
 
 function renderVesselOptions(keyword = '') {
@@ -82,38 +148,71 @@ function renderVesselOptions(keyword = '') {
 
 function setVoyageEditMode(voyage) {
   editingVoyageId = voyage?.id || null;
+  voyageDirty = false;
   if (voyage) {
     fillVoyageForm(voyage);
     $('saveVoyageBtn').textContent = '保存当前航次';
     $('voyageResumeMsg').textContent = `当前航次：${voyage.inbound_voyage_no || '未填进港航次'} → ${voyage.outbound_voyage_no || '未填出港航次'}，已自动恢复历史资料。`;
   } else {
     $('voyageForm').reset();
+    $('voyageVesselId').value = lockedVesselId || '';
+    updateCustomsInspectionText();
     $('saveVoyageBtn').textContent = '保存新航次';
-    $('voyageResumeMsg').textContent = '正在新建航次，保存后会自动进入历史记录。';
+    $('voyageResumeMsg').textContent = lockedVesselId
+      ? '正在新建当前选中船舶的航次，保存后会进入该船历史记录。'
+      : '请先在左侧船舶档案中选择船舶。';
   }
 }
 
 async function refresh(preferredVoyageId = null) {
   currentVessels = await fetch('/api/vessels').then(r => r.json());
-  $('vesselSearch').value = '';
   renderVesselOptions();
-  currentVoyages = await fetch('/api/voyages').then(r => r.json());
-  $('voyageSelect').innerHTML = currentVoyages.map(v => `<option value="${v.id}">${v.id}｜${v.inbound_voyage_no || ''} → ${v.outbound_voyage_no || ''}</option>`).join('');
-  const preferred = preferredVoyageId || currentVoyageId || requestedVoyageId;
-  const voyage = currentVoyages.find(item => item.id === Number(preferred)) || currentVoyages[0] || null;
+  const allVoyages = await fetch('/api/voyages').then(r => r.json());
+  // 从航次历史“继续操作”进入时，指定航次所属船舶优先于当前页面选择。
+  // 这样历史航次恢复后，船舶档案与航次始终来自同一条记录。
+  const requested = requestedVoyageId ? allVoyages.find(item => item.id === requestedVoyageId) : null;
+  if (requested) lockedVesselId = requested.vessel_id;
+  if (!currentVessels.some(item => item.id === Number(lockedVesselId))) lockedVesselId = null;
+  if (lockedVesselId) {
+    $('vesselSelect').value = String(lockedVesselId);
+    syncVesselSearch(lockedVesselId);
+  } else {
+    const selectedId = Number($('vesselSelect').value);
+    if (currentVessels.some(item => item.id === selectedId)) syncVesselSearch(selectedId);
+    else {
+      $('vesselSelect').value = '';
+      $('vesselSearch').value = '';
+    }
+  }
+  currentVoyages = lockedVesselId ? allVoyages.filter(item => Number(item.vessel_id) === Number(lockedVesselId)) : [];
+  $('voyageSelect').innerHTML = currentVoyages.length
+    ? `<option value="">请选择该船历史航次</option>${currentVoyages.map(v => `<option value="${v.id}">${v.id}｜${v.inbound_voyage_no || ''} → ${v.outbound_voyage_no || ''}</option>`).join('')}`
+    : '<option value="">暂无该船历史航次</option>';
+  const preferred = preferredVoyageId || currentVoyageId || (requestedVoyageId && currentVoyages.some(item => item.id === requestedVoyageId) ? requestedVoyageId : null);
+  const voyage = currentVoyages.find(item => item.id === Number(preferred)) || null;
   currentVoyageId = voyage?.id || null;
   if (voyage) {
     $('voyageSelect').value = String(voyage.id);
     setVoyageEditMode(voyage);
   } else setVoyageEditMode(null);
+  updateVesselLockUI();
+  updateVesselFormMode();
   await loadCrewOptions();
 }
 
 async function loadCrewOptions() {
   if (!currentVoyageId) {
+    currentCrew = []; savedCrewChanges = [];
+    temporaryEntryApplicants = [];
+    exitStampApplicants = [];
     $('downCrewSelect').innerHTML = '<option value="">请先选择航次</option>';
     $('downCrewSelect').disabled = true;
     $('crewRosterMsg').textContent = '';
+    renderTemporaryEntryOptions();
+    renderTemporaryEntryList();
+    renderExitStampOptions();
+    renderExitStampList();
+    updateToolAvailability();
     return;
   }
   const res = await fetch(`/api/voyages/${currentVoyageId}/summary`);
@@ -123,6 +222,8 @@ async function loadCrewOptions() {
     return;
   }
   const data = await res.json(); currentCrew = data.crew || []; savedCrewChanges = data.crew_change || [];
+  temporaryEntryApplicants = data.temporary_entry || [];
+  exitStampApplicants = data.exit_stamp || [];
   $('downCrewSelect').innerHTML = currentCrew.length
     ? currentCrew.map(c => `<option value="${c.id}">${c.name}｜${c.nationality || ''}｜${c.rank || ''}</option>`).join('')
     : '<option value="">请先导入船员名单</option>';
@@ -130,6 +231,55 @@ async function loadCrewOptions() {
   $('crewRosterMsg').textContent = currentCrew.length ? `当前名单 ${currentCrew.length} 人` : '尚未导入名单';
   renderDownPreview();
   renderCrewChangeLists();
+  renderTemporaryEntryOptions();
+  renderTemporaryEntryList();
+  renderExitStampOptions();
+  renderExitStampList();
+  updateToolAvailability();
+}
+
+function renderTemporaryEntryOptions() {
+  const select = $('temporaryEntryCrewSelect');
+  if (!select) return;
+  const selectedIds = new Set(temporaryEntryApplicants.map(item => Number(item.crew_member_id)));
+  const available = currentCrew.filter(person => !selectedIds.has(Number(person.id)));
+  select.innerHTML = available.length
+    ? available.map(person => `<option value="${person.id}">${escapeHtml(person.name)}｜${escapeHtml(person.nationality || '')}｜${escapeHtml(person.rank || '')}</option>`).join('')
+    : '<option value="">没有可添加的船员</option>';
+  select.disabled = available.length === 0;
+  $('temporaryEntryAddBtn').disabled = available.length === 0;
+}
+
+function renderTemporaryEntryList() {
+  const target = $('temporaryEntryList');
+  if (!target) return;
+  target.innerHTML = temporaryEntryApplicants.length
+    ? temporaryEntryApplicants.map(item => `<div class="change-item"><span>${escapeHtml(item.name)}｜${escapeHtml(item.nationality || '')}｜${escapeHtml(item.rank || '')}｜出生：${escapeHtml(humanDate(item.birth_date))}｜证件号：${escapeHtml(item.document_no || '')}</span><button class="danger small-button" type="button" data-delete-temporary-entry="${item.id}">移除</button></div>`).join('')
+    : '<p class="muted">暂未添加申请临入人员</p>';
+  $('temporaryEntryCount').textContent = temporaryEntryApplicants.length ? `已选择 ${temporaryEntryApplicants.length} 人` : '';
+  $('temporaryEntryBtn').disabled = !currentVoyageId || temporaryEntryApplicants.length === 0;
+}
+
+function renderExitStampOptions() {
+  const select = $('exitStampCrewSelect');
+  if (!select) return;
+  const selectedIds = new Set(exitStampApplicants.map(item => Number(item.crew_member_id)));
+  const available = currentCrew.filter(person => !selectedIds.has(Number(person.id)));
+  select.innerHTML = available.length
+    ? available.map(person => `<option value="${person.id}">${escapeHtml(person.name)}｜${escapeHtml(person.nationality || '')}｜${escapeHtml(person.rank || '')}</option>`).join('')
+    : '<option value="">没有可添加的船员</option>';
+  select.disabled = available.length === 0;
+  $('exitStampAddBtn').disabled = available.length === 0;
+}
+
+function renderExitStampList() {
+  const target = $('exitStampList');
+  if (!target) return;
+  target.innerHTML = exitStampApplicants.length
+    ? exitStampApplicants.map(item => `<div class="change-item"><span>${escapeHtml(item.name)}｜${escapeHtml(item.nationality || '')}｜出生：${escapeHtml(humanDate(item.birth_date))}｜证件号：${escapeHtml(item.document_no || '')}</span><button class="danger small-button" type="button" data-delete-exit-stamp="${item.id}">移除</button></div>`).join('')
+    : '<p class="muted">暂未添加申请出境章人员</p>';
+  $('exitStampCount').textContent = exitStampApplicants.length ? `已选择 ${exitStampApplicants.length} 人` : '';
+  $('exitStampBtn').disabled = !currentVoyageId || exitStampApplicants.length === 0;
 }
 
 function selectedCrew() {
@@ -139,7 +289,7 @@ function selectedCrew() {
 function renderDownPreview() {
   const selected = selectedCrew();
   $('downCrewPreview').textContent = selected
-    ? `姓名：${selected.name || ''}　国籍：${selected.nationality || ''}　性别：${selected.gender || ''}　出生日期：${selected.birth_date || ''}　证件号：${selected.document_no || ''}　职务：${selected.rank || ''}`
+    ? `姓名：${selected.name || ''}　国籍：${selected.nationality || ''}　性别：${selected.gender || ''}　出生日期：${humanDate(selected.birth_date)}　证件号：${selected.document_no || ''}　职务：${selected.rank || ''}`
     : '请先导入船员名单。';
 }
 
@@ -147,11 +297,27 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 }
 
+function humanDate(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const normalized = normalizeDateInput(raw);
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : raw;
+}
+
+function humanDateTime(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const normalized = normalizeDateTimeInput(raw);
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(normalized)
+    ? normalized.replace('T', ' ').slice(0, 16)
+    : raw.replace('T', ' ').slice(0, 16);
+}
+
 function changeLabel(person) {
   const extras = person.direction === 'down'
-    ? `事由：${person.reason || '未填写'}｜临入：${person.temporary_entry_permit ? '是' : '否'}${person.flight_no ? `｜航班：${person.flight_no}` : ''}${person.flight_time ? `｜时间：${person.flight_time.replace('T', ' ').slice(0, 16)}` : ''}${person.route ? `｜航线：${person.route}` : ''}`
+    ? `事由：${person.reason || '未填写'}｜临入：${person.temporary_entry_permit ? '是' : '否'}${person.flight_no ? `｜航班：${person.flight_no}` : ''}${person.flight_time ? `｜时间：${humanDateTime(person.flight_time)}` : ''}${person.route ? `｜航线：${person.route}` : ''}`
     : `职务：${person.rank || '未填写'}`;
-  return `${person.name || ''}｜${person.nationality || ''}｜${person.gender || ''}｜出生：${person.birth_date || '未填写'}｜证件号：${person.document_no || ''}｜${extras}`;
+  return `${person.name || ''}｜${person.nationality || ''}｜${person.gender || ''}｜出生：${humanDate(person.birth_date) || '未填写'}｜证件号：${person.document_no || ''}｜${extras}`;
 }
 
 function renderChangeList(targetId, pending, direction) {
@@ -243,12 +409,14 @@ function fillVesselFormPartial(vessel) {
 function fillVoyageFormPartial(voyage) {
   const form = $('voyageForm');
   for (const key of ['vessel_id', 'inbound_voyage_no', 'outbound_voyage_no', 'berth', 'previous_port', 'previous_port_country', 'next_port', 'next_port_country', 'route', 'entry_type']) {
-    if (form.elements[key] && voyage[key] !== undefined && voyage[key] !== null && voyage[key] !== '') form.elements[key].value = voyage[key];
+    if (form.elements[key] && voyage[key] !== undefined && voyage[key] !== null && voyage[key] !== '') {
+      if (key !== 'vessel_id' || !lockedVesselId || Number(voyage[key]) === Number(lockedVesselId)) form.elements[key].value = voyage[key];
+    }
   }
   for (const key of ['arrival_time', 'departure_time', 'previous_port_departure_time']) {
     if (form.elements[key] && voyage[key]) form.elements[key].value = voyageFormDateTime(voyage[key]);
   }
-  if (voyage.vessel_id) syncVesselSearch(voyage.vessel_id);
+  if (voyage.vessel_id && (!lockedVesselId || Number(voyage.vessel_id) === Number(lockedVesselId))) syncVesselSearch(voyage.vessel_id);
 }
 
 function extractedVesselMatch(vessel) {
@@ -280,6 +448,7 @@ function vesselHasData(vessel) {
 
 function applyVesselTextExtraction() {
   if (!parsedVesselTextExtraction) return;
+  if (!isNewVesselMode) return setMsg('vesselTextExtractMsg', '首页已有船舶档案只允许查看；如需录入识别结果，请先点击“新建船舶”。', true);
   const vessel = parsedVesselTextExtraction.vessel || {};
   fillVesselFormPartial(vessel);
   extractedVesselExtra = vessel.extra || {};
@@ -290,15 +459,18 @@ function applyVoyageTextExtraction() {
   if (!parsedVoyageTextExtraction) return;
   const vessel = parsedVoyageTextExtraction.vessel || {};
   const voyage = parsedVoyageTextExtraction.voyage || {};
-  if (vesselHasData(vessel)) fillVesselFormPartial(vessel);
-  if (vesselHasData(vessel)) extractedVesselExtra = {...extractedVesselExtra, ...(vessel.extra || {})};
+  if (vesselHasData(vessel) && isNewVesselMode) fillVesselFormPartial(vessel);
+  if (vesselHasData(vessel) && isNewVesselMode) extractedVesselExtra = {...extractedVesselExtra, ...(vessel.extra || {})};
   extractedVoyageExtra = voyage.extra || {};
   const matchedVessel = extractedVesselMatch(vessel);
   if (matchedVessel) {
+    lockedVesselId = matchedVessel.id;
     voyage.vessel_id = matchedVessel.id;
     $('vesselSelect').value = String(matchedVessel.id);
     syncVesselSearch(matchedVessel.id);
+    fillVesselForm(matchedVessel);
   } else if (Object.keys(vessel).some(key => key !== 'extra' && vessel[key])) {
+    lockedVesselId = null;
     $('vesselSelect').value = '';
     $('vesselSearch').value = '';
   }
@@ -306,6 +478,8 @@ function applyVoyageTextExtraction() {
   const message = matchedVessel
     ? '航次文字已填入航次管理表单，请检查后保存。'
     : '航次文字已填入表单；未匹配到历史船舶，请先保存船舶档案，再选择船舶保存航次。';
+  voyageDirty = true;
+  updateVesselLockUI();
   setMsg('voyageTextExtractMsg', message, !matchedVessel && Object.keys(voyage).length > 1);
 }
 
@@ -329,6 +503,7 @@ $('vesselForm').elements.imo.addEventListener('input', () => {
 
 $('vesselForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!isNewVesselMode) return setMsg('vesselMsg', '首页已有船舶档案不允许直接修改，请进入船舶档案管理页面编辑', true);
   const body = formJSON(event.target);
   body.extra = {...extractedVesselExtra};
   for (const key of ['imo','chinese_name','english_name','nationality','call_sign','shipping_company','mmsi']) body[key] = nullable(body[key]);
@@ -337,37 +512,70 @@ $('vesselForm').addEventListener('submit', async (event) => {
   if (!res.ok) return setMsg('vesselMsg', await res.text(), true);
   const savedVessel = await res.json();
   extractedVesselExtra = {};
+  isNewVesselMode = false;
   await refresh();
+  $('vesselSelect').value = String(savedVessel.id);
+  syncVesselSearch(savedVessel.id);
   fillVesselForm(savedVessel);
-  setMsg('vesselMsg', `船舶档案已新增：${savedVessel.chinese_name || savedVessel.english_name || savedVessel.imo || ''}；如要使用该船，请点击“新建航次”`);
+  updateVesselLockUI();
+  setMsg('vesselMsg', `船舶档案已新增：${savedVessel.chinese_name || savedVessel.english_name || savedVessel.imo || ''}；现在可以选择该船并新建航次`);
 });
 
 $('voyageForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!lockedVesselId) return setMsg('voyageMsg', '请先在船舶档案中选择船舶档案', true);
   const body = formJSON(event.target);
   body.extra = {...extractedVoyageExtra};
-  if (!body.vessel_id) return setMsg('voyageMsg', '请先保存或选择船舶档案，再保存航次', true);
-  body.vessel_id = Number(body.vessel_id); body.crew_change = false;
+  body.vessel_id = Number(lockedVesselId); body.crew_change = false; body.customs_inspection = event.target.elements.customs_inspection.checked;
   for (const key of ['arrival_time','departure_time','previous_port_departure_time']) body[key] = normalizeDateTimeInput(body[key]);
   body.entry_type = nullable(body.entry_type);
   const url = editingVoyageId ? `/api/voyages/${editingVoyageId}` : '/api/voyages';
   const method = editingVoyageId ? 'PUT' : 'POST';
   const res = await fetch(url, {method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  if (res.ok) { const item = await res.json(); currentVoyageId = item.id; await refresh(item.id); $('voyageSelect').value = String(item.id); }
+  if (res.ok) { const item = await res.json(); currentVoyageId = item.id; voyageDirty = false; await refresh(item.id); $('voyageSelect').value = String(item.id); }
   setMsg('voyageMsg', res.ok ? '航次已保存' : await res.text(), !res.ok); if (res.ok) extractedVoyageExtra = {};
 });
 
 $('newVoyageBtn').addEventListener('click', async () => {
-  currentVoyageId = null; pendingDownCrew = []; pendingUpCrew = []; resetDownEdit(); resetUpEdit(); setVoyageEditMode(null); $('vesselSearch').value = ''; renderVesselOptions(); await loadCrewOptions();
-  setMsg('voyageMsg', '已切换到新建航次');
+  if (voyageDirty) return setMsg('voyageMsg', '当前航次有未保存修改，请先保存后再新建航次', true);
+  requestedVoyageId = null;
+  lockedVesselId = null; currentVoyageId = null; editingVoyageId = null; voyageDirty = false; isNewVesselMode = false;
+  $('vesselForm').reset(); $('vesselSelect').value = ''; $('vesselSearch').value = '';
+  pendingDownCrew = []; pendingUpCrew = []; resetDownEdit(); resetUpEdit();
+  await refresh();
+  setMsg('voyageMsg', '已清空船舶和航次信息，请重新选择船舶后填写新航次');
 });
 
-$('newVesselBtn').addEventListener('click', () => {
+$('newVesselBtn').addEventListener('click', async () => {
+  if (isNewVesselMode) {
+    isNewVesselMode = false;
+    $('vesselForm').reset();
+    await refresh();
+    setMsg('vesselMsg', '已取消新建船舶');
+    return;
+  }
+  if (lockedVesselId && !window.confirm('当前已选择船舶，切换到新建船舶会清空当前航次操作状态，是否继续？')) return;
+  requestedVoyageId = null;
+  lockedVesselId = null; currentVoyageId = null; editingVoyageId = null; voyageDirty = false; isNewVesselMode = true;
   $('vesselForm').reset();
   extractedVesselExtra = {};
+  pendingDownCrew = []; pendingUpCrew = []; resetDownEdit(); resetUpEdit();
+  $('vesselSelect').value = '';
+  $('vesselSearch').value = '';
+  await refresh();
+  updateVesselFormMode();
   setMsg('vesselMsg', '已切换到新建船舶模式，请填写后保存');
   $('vesselForm').elements.imo.focus();
 });
+
+function updateCustomsInspectionText() {
+  const input = $('customsInspection');
+  const text = $('customsInspectionText');
+  if (!input || !text) return;
+  text.textContent = input.checked ? '查船：系统中控' : '不查船：系统允许放行';
+}
+
+$('customsInspection').addEventListener('change', updateCustomsInspectionText);
 
 $('crewFile').addEventListener('change', async (event) => {
   if (!currentVoyageId || !event.target.files[0]) return setMsg('toolMsg', '请先保存并选择航次', true);
@@ -380,17 +588,10 @@ $('crewFile').addEventListener('change', async (event) => {
   } else setMsg('toolMsg', await res.text(), true);
 });
 
-$('sourceImage').addEventListener('change', async (event) => {
-  if (!currentVoyageId || !event.target.files[0]) return setMsg('toolMsg', '请先保存并选择航次', true);
-  const data = new FormData(); data.append('file', event.target.files[0]);
-  const res = await fetch(`/api/voyages/${currentVoyageId}/source-image`, {method:'POST', body:data});
-  if (!res.ok) return setMsg('toolMsg', await res.text(), true);
-  const result = await res.json(); setMsg('toolMsg', `图片已识别并带入，待人工补录：${result.missing_fields.join('、') || '无'}`);
-});
-
 $('tonnageForm').addEventListener('submit', async (event) => {
   event.preventDefault(); if (!currentVoyageId) return setMsg('tonnageMsg', '请先保存航次', true);
-  const body = formJSON(event.target); body.duration_days = body.duration_days ? Number(body.duration_days) : null; body.purchase_date = nullable(body.purchase_date);
+  const body = formJSON(event.target); body.duration_days = body.duration_days ? Number(body.duration_days) : null;
+  body.purchase_date = nullable(normalizeDateInput(body.purchase_date || $('purchaseDateManual').value));
   const res = await fetch(`/api/voyages/${currentVoyageId}/tonnage`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
   setMsg('tonnageMsg', res.ok ? '吨税信息已保存' : await res.text(), !res.ok);
 });
@@ -413,7 +614,7 @@ $('downCrewForm').addEventListener('submit', async (event) => {
 $('upCrewForm').addEventListener('submit', async (event) => {
   event.preventDefault(); if (!currentVoyageId) return setMsg('upCrewMsg', '请先保存航次', true);
   const form = formJSON(event.target);
-  const body = {direction:'up', name:form.name, nationality:form.nationality, gender:form.gender, birth_date:form.birth_date, document_no:form.document_no, rank:nullable(form.rank), temporary_entry_permit:null, flight_no:null, flight_time:null, route:null};
+  const body = {direction:'up', name:form.name, nationality:form.nationality, gender:form.gender, birth_date:normalizeDateInput(form.birth_date), document_no:form.document_no, rank:nullable(form.rank), temporary_entry_permit:null, flight_no:null, flight_time:null, route:null};
   if (editingUpChangeId) {
     const res = await fetch(`/api/crew-change/${editingUpChangeId}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     if (!res.ok) return setMsg('upCrewMsg', await res.text(), true);
@@ -459,25 +660,77 @@ $('cancelDownEditBtn').addEventListener('click', resetDownEdit);
 $('cancelUpEditBtn').addEventListener('click', resetUpEdit);
 
 $('voyageSelect').addEventListener('change', async event => {
-  currentVoyageId = Number(event.target.value); pendingDownCrew = []; pendingUpCrew = []; resetDownEdit(); resetUpEdit();
+  const nextVoyageId = Number(event.target.value);
+  if (voyageDirty && nextVoyageId && nextVoyageId !== Number(currentVoyageId)) {
+    event.target.value = currentVoyageId ? String(currentVoyageId) : '';
+    return setMsg('voyageMsg', '当前航次有未保存修改，请先保存后再切换历史航次', true);
+  }
+  if (!nextVoyageId) {
+    currentVoyageId = null; editingVoyageId = null; setVoyageEditMode(null); await loadCrewOptions(); updateVesselLockUI(); return;
+  }
+  const selectedVoyage = currentVoyages.find(item => item.id === nextVoyageId);
+  if (!selectedVoyage || Number(selectedVoyage.vessel_id) !== Number(lockedVesselId)) {
+    return setMsg('voyageMsg', '该航次不属于当前选中船舶，已阻止切换', true);
+  }
+  requestedVoyageId = null;
+  currentVoyageId = nextVoyageId; pendingDownCrew = []; pendingUpCrew = []; resetDownEdit(); resetUpEdit();
   const voyage = currentVoyages.find(item => item.id === currentVoyageId);
   if (voyage) {
     setVoyageEditMode(voyage);
     await fetch(`/api/voyages/${currentVoyageId}/touch`, {method:'POST'});
   }
   await loadCrewOptions();
+  updateVesselLockUI();
+});
+$('voyageForm').addEventListener('input', () => {
+  voyageDirty = true;
+  updateVesselLockUI();
+});
+$('voyageForm').addEventListener('change', () => {
+  voyageDirty = true;
+  updateVesselLockUI();
 });
 $('refreshBtn').addEventListener('click', refresh);
 $('vesselSearch').addEventListener('input', event => renderVesselOptions(event.target.value));
-$('vesselSelect').addEventListener('change', event => {
-  syncVesselSearch(event.target.value);
+ $('vesselSelect').addEventListener('change', async event => {
   const vessel = currentVessels.find(item => item.id === Number(event.target.value));
   if (vessel) {
+    if (voyageDirty) {
+      event.target.value = lockedVesselId ? String(lockedVesselId) : '';
+      return setMsg('vesselMsg', '当前航次有未保存修改，请先保存后再切换船舶', true);
+    }
+    requestedVoyageId = null;
+    lockedVesselId = vessel.id;
+    currentVoyageId = null;
+    editingVoyageId = null;
+    voyageDirty = false;
+    isNewVesselMode = false;
+    pendingDownCrew = []; pendingUpCrew = []; resetDownEdit(); resetUpEdit();
+    syncVesselSearch(vessel.id);
     fillVesselForm(vessel);
-    setMsg('vesselMsg', `已同步所选船舶档案：${vessel.chinese_name || vessel.english_name || vessel.imo || ''}`);
+    await refresh();
+    updateVesselLockUI();
+    setMsg('vesselMsg', `已选择船舶档案：${vesselDisplay(vessel)}；保存航次时将自动绑定该船`);
   }
 });
-$('summaryBtn').addEventListener('click', async () => { if (currentVoyageId) $('output').textContent = JSON.stringify(await fetch(`/api/voyages/${currentVoyageId}/summary`).then(r => r.json()), null, 2); });
+function renderSummary(data) {
+  const summary = data.summary_keywords || {};
+  const female = Number(summary.female_count || 0);
+  return [
+    `船名：${summary.vessel_chinese_name || '待人工填写'} / ${summary.vessel_english_name || '待人工填写'}`,
+    `IMO：${summary.imo || '待人工填写'}｜船舶国籍：${summary.vessel_nationality || '待人工填写'}`,
+    `进港航次号：${summary.inbound_voyage_no || '待人工填写'}`,
+    `出港航次号：${summary.outbound_voyage_no || '待人工填写'}`,
+    `泊位：${summary.berth || '待人工填写'}`,
+    `港序：${summary.port_sequence || '待人工填写'}`,
+    `靠泊时间：${summary.arrival_time || '待人工填写'}`,
+    `离泊时间：${summary.departure_time || '待人工填写'}`,
+    `船员总数：${summary.crew_count ?? 0}名`,
+    `船员国籍分布：${summary.nationality_distribution || '待人工填写'}`,
+    `女性船员：${female ? `${female}名` : '无'}`,
+  ].join('\n');
+}
+$('summaryBtn').addEventListener('click', async () => { if (currentVoyageId) $('output').textContent = renderSummary(await fetch(`/api/voyages/${currentVoyageId}/summary`).then(r => r.json())); });
 $('forecastBtn').addEventListener('click', async () => { if (currentVoyageId) { const data = await fetch(`/api/voyages/${currentVoyageId}/forecast`, {method:'POST'}).then(r => r.json()); $('output').textContent = data.content + `\n\n待补字段：${data.missing_fields.join('、') || '无'}`; } });
 $('tonnageBtn').addEventListener('click', () => { if (currentVoyageId) window.open(`/api/voyages/${currentVoyageId}/export/tonnage`, '_blank'); });
 $('strongGeneralBtn').addEventListener('click', () => { if (currentVoyageId) window.open(`/api/voyages/${currentVoyageId}/export/strong-general`, '_blank'); });
@@ -487,6 +740,53 @@ $('crewChangeCustomsBtn').addEventListener('click', () => { if (currentVoyageId)
 $('healthDeclarationBtn').addEventListener('click', () => { if (currentVoyageId) window.open(`/api/voyages/${currentVoyageId}/export/health-declaration`, '_blank'); });
 $('outerFieldReceiptBtn').addEventListener('click', () => { if (currentVoyageId) window.open('/api/voyages/' + currentVoyageId + '/export/outer-field-receipt', '_blank'); });
 $('borderInspectionBtn').addEventListener('click', () => { if (currentVoyageId) window.open('/api/voyages/' + currentVoyageId + '/export/border-inspection', '_blank'); });
+$('maritimePreapprovalBtn').addEventListener('click', () => { if (currentVoyageId) window.open('/api/voyages/' + currentVoyageId + '/export/maritime-preapproval', '_blank'); });
+$('temporaryEntryBtn').addEventListener('click', () => { if (currentVoyageId && temporaryEntryApplicants.length) window.open('/api/voyages/' + currentVoyageId + '/export/temporary-entry', '_blank'); });
+$('exitStampBtn').addEventListener('click', () => { if (currentVoyageId && exitStampApplicants.length) window.open('/api/voyages/' + currentVoyageId + '/export/exit-stamp', '_blank'); });
+$('temporaryEntryForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const crewMemberId = Number($('temporaryEntryCrewSelect').value);
+  if (!currentVoyageId || !crewMemberId) return setMsg('temporaryEntryMsg', '请先选择船员', true);
+  const res = await fetch(`/api/voyages/${currentVoyageId}/temporary-entry`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({crew_member_id: crewMemberId})});
+  if (!res.ok) return setMsg('temporaryEntryMsg', await res.text(), true);
+  await loadCrewOptions();
+  setMsg('temporaryEntryMsg', '已加入临入申请名单');
+});
+$('exitStampForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const crewMemberId = Number($('exitStampCrewSelect').value);
+  if (!currentVoyageId || !crewMemberId) return setMsg('exitStampMsg', '请先选择船员', true);
+  const res = await fetch(`/api/voyages/${currentVoyageId}/exit-stamp`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({crew_member_id: crewMemberId})});
+  if (!res.ok) return setMsg('exitStampMsg', await res.text(), true);
+  await loadCrewOptions();
+  setMsg('exitStampMsg', '已加入出境章申请名单');
+});
+bindDateInput('#purchaseDateManual, #upCrewForm input[name="birth_date"]');
+const purchaseDateCalendar = $('tonnageForm').elements.purchase_date;
+const purchaseDateManual = $('purchaseDateManual');
+purchaseDateCalendar.addEventListener('change', () => {
+  purchaseDateManual.value = normalizeDateInput(purchaseDateCalendar.value);
+});
+purchaseDateManual.addEventListener('input', () => {
+  const value = normalizeDateInput(purchaseDateManual.value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) purchaseDateCalendar.value = value;
+});
+document.addEventListener('click', async event => {
+  const button = event.target.closest('[data-delete-temporary-entry]');
+  if (!button) return;
+  const res = await fetch(`/api/temporary-entry/${button.dataset.deleteTemporaryEntry}`, {method:'DELETE'});
+  if (!res.ok) return setMsg('temporaryEntryMsg', await res.text(), true);
+  await loadCrewOptions();
+  setMsg('temporaryEntryMsg', '已从临入申请名单移除');
+});
+document.addEventListener('click', async event => {
+  const button = event.target.closest('[data-delete-exit-stamp]');
+  if (!button) return;
+  const res = await fetch(`/api/exit-stamp/${button.dataset.deleteExitStamp}`, {method:'DELETE'});
+  if (!res.ok) return setMsg('exitStampMsg', await res.text(), true);
+  await loadCrewOptions();
+  setMsg('exitStampMsg', '已从出境章申请名单移除');
+});
 async function parseTextExtraction(inputId, resultIds, setter, messageId) {
   const text = $(inputId).value.trim();
   if (!text) return setMsg(messageId, '请先粘贴固定格式文本', true);

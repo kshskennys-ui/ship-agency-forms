@@ -41,6 +41,7 @@ class VoyageCreate(BaseModel):
     route: Optional[str] = None
     entry_type: Optional[str] = None
     crew_change: bool = False
+    customs_inspection: bool = False
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -65,6 +66,14 @@ class CrewChangePersonCreate(BaseModel):
 
 class CrewChangeCreate(BaseModel):
     people: list[CrewChangePersonCreate]
+
+
+class TemporaryEntryApplicantCreate(BaseModel):
+    crew_member_id: int
+
+
+class ExitStampApplicantCreate(BaseModel):
+    crew_member_id: int
 
 
 class CrewChangePersonUpdate(CrewChangePersonCreate):

@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -48,6 +48,7 @@ class Voyage(TimestampMixin, Base):
     route: Mapped[Optional[str]] = mapped_column(String(256))
     entry_type: Mapped[Optional[str]] = mapped_column(String(16))
     crew_change: Mapped[bool] = mapped_column(default=False)
+    customs_inspection: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     extra_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
@@ -93,6 +94,24 @@ class CrewChangePerson(Base):
     flight_no: Mapped[Optional[str]] = mapped_column(String(64))
     flight_time: Mapped[Optional[datetime]] = mapped_column(DateTime)
     route: Mapped[Optional[str]] = mapped_column(String(256))
+
+
+class TemporaryEntryApplicant(TimestampMixin, Base):
+    __tablename__ = "temporary_entry_applicants"
+    __table_args__ = (UniqueConstraint("voyage_id", "crew_member_id", name="uq_temporary_entry_crew"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    voyage_id: Mapped[int] = mapped_column(ForeignKey("voyages.id"), index=True)
+    crew_member_id: Mapped[int] = mapped_column(ForeignKey("crew_members.id"), index=True)
+
+
+class ExitStampApplicant(TimestampMixin, Base):
+    __tablename__ = "exit_stamp_applicants"
+    __table_args__ = (UniqueConstraint("voyage_id", "crew_member_id", name="uq_exit_stamp_crew"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    voyage_id: Mapped[int] = mapped_column(ForeignKey("voyages.id"), index=True)
+    crew_member_id: Mapped[int] = mapped_column(ForeignKey("crew_members.id"), index=True)
 
 
 class TonnageApplication(TimestampMixin, Base):

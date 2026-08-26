@@ -17,7 +17,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from ..paths import EXPORT_DIR, HELPER_DIR, TEMPLATE_DIR
-from .forecast import format_crew_change
+from .forecast import format_crew_change, normalize_port
 
 
 def _helper_path(name):
@@ -209,14 +209,14 @@ def _crew_document_type(person):
     except (TypeError, json.JSONDecodeError):
         extra = {}
     explicit = extra.get("document_type") or extra.get("document_category")
+    if _text(explicit).strip():
+        return _text(explicit).strip()
     raw_values = extra.get("raw_row") or []
-    raw_text = " ".join(_text(value) for value in raw_values).lower()
-    source_text = f"{_text(explicit)} {raw_text}"
-    if "海员证" in source_text or "seaman" in source_text or "seafarer" in source_text:
-        return "海员证"
-    if "护照" in source_text or "passport" in source_text:
-        return "护照"
-    return _text(explicit or "其他证件").strip() or "其他证件"
+    for value in raw_values:
+        candidate = _text(value).strip()
+        if "海员证" in candidate or "护照" in candidate or "seaman" in candidate.lower() or "passport" in candidate.lower():
+            return candidate
+    return "其他证件"
 
 
 def _crew_document_summary(crew):
@@ -292,6 +292,69 @@ def export_outer_field_receipt(vessel, voyage, crew):
                 )
                 content = document_xml.encode("utf-8")
             output_zip.writestr(entry, content)
+    return output
+
+
+def _maritime_arrival_text(value):
+    if not value:
+        return ""
+    return f"{value.year}年{value.month}月{value.day}日{value:%H}：{value:%M}"
+
+
+def _maritime_departure_text(value):
+    if not value:
+        return ""
+    return f"{value.year}年{value.month:02d}月{value.day:02d}日{value:%H%M}"
+
+
+def export_maritime_preapproval(vessel, voyage):
+    """Export the maritime early export-approval application from its Word template."""
+    document = Document(TEMPLATE_DIR / "maritime_preapproval_template.docx")
+    chinese_name = _text(vessel.chinese_name)
+    english_name = _text(vessel.english_name)
+    nationality = _text(vessel.nationality)
+    imo = _text(vessel.imo)
+    extra = json.loads(voyage.extra_json or "{}")
+    port_values = []
+    for port, country in (
+        (voyage.previous_port, voyage.previous_port_country),
+        ("南沙", "中国"),
+        (voyage.next_port, voyage.next_port_country),
+    ):
+        if port:
+            normalized = normalize_port(port, country)
+            if normalized and normalized != "[待人工填写]":
+                port_values.append(normalized)
+    route = extra.get("port_sequence") or "-".join(port_values)
+    berth = _text(voyage.berth)
+    arrival = _maritime_arrival_text(voyage.arrival_time)
+    departure = _maritime_departure_text(voyage.departure_time)
+    application_date = datetime.now().strftime("%Y年%m月%d日")
+
+    title = next((p for p in document.paragraphs if "申请提前审批出口手续" in p.text), None)
+    if title:
+        _set_paragraph_text(title, f"关于“{chinese_name}”轮申请提前审批出口手续的情况说明")
+
+    body = next((p for p in document.paragraphs if p.text.startswith("您好!兹有我司代理")), None)
+    if body:
+        ship_label = chinese_name
+        if english_name:
+            ship_label = f"{ship_label}（{english_name}）" if ship_label else english_name
+        body_text = (
+            f"您好!兹有我司代理{nationality + '籍' if nationality else ''}船舶：{ship_label}，IMO：{imo}，航线：{route}；"
+            f"船舶于{arrival}靠泊{berth}，计划于{departure}离泊。由于该轮靠泊时间晚。"
+            "边防手续未能及时办理未能及时放行信息。我司申请提前审批海事出口手续，"
+            "我司保证在其它部门未办理完成前不将出口岸许可证发送给船方，并在后续完成剩余手续的放行。"
+            "感谢贵处对我司工作的大力支持。"
+        )
+        _set_paragraph_text(body, body_text)
+
+    sign_date = next((p for p in reversed(document.paragraphs) if "年" in p.text and "月" in p.text and "日" in p.text), None)
+    if sign_date:
+        _set_paragraph_text(sign_date, application_date)
+
+    output = EXPORT_DIR / f"海事提前审批申请_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.docx"
+    document.save(output)
     return output
 
 
@@ -680,6 +743,139 @@ def export_crew_change_customs(vessel, voyage, people):
         _apply_table_borders(table)
 
     output = EXPORT_DIR / f"crew_change_customs_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.docx"
+    document.save(output)
+    return output
+
+
+def _temporary_entry_datetime(value):
+    if not value:
+        return ""
+    return f"{value.year}年{value.month:02d}月{value.day:02d}日 {value:%H:%M}"
+
+
+def _copy_table_row(table):
+    from copy import deepcopy
+
+    table._tbl.append(deepcopy(table.rows[-1]._tr))
+
+
+def _exit_stamp_sequence(person, fallback):
+    try:
+        extra = json.loads(getattr(person, "extra_json", "{}") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        extra = {}
+    raw_row = extra.get("raw_row") or []
+    sequence = _text(raw_row[0]).strip() if raw_row else ""
+    if re.fullmatch(r"\d+\.0", sequence):
+        sequence = sequence[:-2]
+    return sequence or str(fallback)
+
+
+def export_temporary_entry(vessel, voyage, crew):
+    """Export the temporary-entry application using the supplied Word template."""
+    document = Document(TEMPLATE_DIR / "temporary_entry_template.docx")
+    extra = json.loads(voyage.extra_json or "{}")
+    chinese_name = _text(vessel.chinese_name)
+    english_name = _text(vessel.english_name)
+    nationality = _text(vessel.nationality)
+    ship_label = f"{chinese_name}({english_name})" if chinese_name and english_name else chinese_name or english_name
+    port_sequence = extra.get("port_sequence") or "-".join(
+        value for value in [voyage.previous_port, "南沙", voyage.next_port] if value
+    )
+    berth_text = _text(voyage.berth).strip()
+    berth_display = berth_text if berth_text.endswith("泊位") else f"{berth_text} 泊位" if berth_text else ""
+    title = next((p for p in document.paragraphs if "办理船员临时入境许可" in p.text), None)
+    if title:
+        _set_paragraph_text(title, f"关于“{chinese_name}”轮办理船员临时入境许可的申请")
+    body = next((p for p in document.paragraphs if p.text.startswith("兹有我司代理")), None)
+    if body:
+        _set_paragraph_text(
+            body,
+            f"兹有我司代理船舶:{ship_label}，IMO:{_text(vessel.imo)}，国籍:{nationality}籍，"
+            f"计划于 {_temporary_entry_datetime(voyage.arrival_time)} 靠泊{berth_display}，"
+            f"计划于 {_temporary_entry_datetime(voyage.departure_time)} 离泊，港序：{port_sequence}。",
+        )
+    count = len(crew)
+    request = next((p for p in document.paragraphs if "名船员办理临时入境许可" in p.text), None)
+    if request:
+        _set_paragraph_text(
+            request,
+            f"我司与船方一起向贵站提出申请，为该轮 {count} 名船员办理临时入境许可(登陆)。"
+            "船员在登陆期间，由我司负责船员的接送工作，并确保船员的安全以及不违反相关法律法规等，谢谢!",
+        )
+    application_date = next((p for p in reversed(document.paragraphs) if "年" in p.text and "月" in p.text and "日" in p.text), None)
+    if application_date:
+        _set_paragraph_text(application_date, datetime.now().strftime("%Y年%m月%d日"))
+    contact_line = next((p for p in document.paragraphs if "联系人:" in p.text or "电话:" in p.text), None)
+    if contact_line:
+        _set_paragraph_text(contact_line, "")
+    table = document.tables[0]
+    desired_rows = len(crew) + 1
+    while len(table.rows) > desired_rows:
+        table._tbl.remove(table.rows[-1]._tr)
+    while len(table.rows) < desired_rows:
+        _copy_table_row(table)
+    for index, person in enumerate(crew, start=1):
+        values = [
+            person.name,
+            person.nationality,
+            person.rank,
+            _date_text(person.birth_date, "-"),
+            person.document_no,
+        ]
+        for cell, value in zip(table.rows[index].cells, values):
+            cell.text = _text(value)
+    output = EXPORT_DIR / f"临入申请_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.docx"
+    document.save(output)
+    return output
+
+
+def export_exit_stamp_application(vessel, voyage, crew):
+    """Export the crew exit-stamp application using the supplied Word template."""
+    document = Document(TEMPLATE_DIR / "exit_stamp_application_template.docx")
+    extra = json.loads(voyage.extra_json or "{}")
+    port_sequence = extra.get("port_sequence") or "-".join(
+        value for value in [voyage.previous_port, "南沙", voyage.next_port] if value
+    )
+    for paragraph in document.paragraphs:
+        if paragraph.text.strip().startswith("港序："):
+            _set_paragraph_text(paragraph, f"港序：{port_sequence}")
+            break
+    application_date = next(
+        (p for p in reversed(document.paragraphs) if "年" in p.text and "月" in p.text and "日" in p.text),
+        None,
+    )
+    if application_date:
+        today = datetime.now()
+        _set_paragraph_text(application_date, f"{today.year}年{today.month}月{today.day}日")
+
+    table = document.tables[0]
+    # The first two rows are the ship information and column header rows.
+    ship_name_cell = table.rows[0].cells[2]
+    ship_name_cell.text = "/".join(
+        value for value in [_text(vessel.chinese_name).strip(), _text(vessel.english_name).strip()] if value
+    )
+    nationality = _text(vessel.nationality).strip()
+    table.rows[0].cells[6].text = f"{nationality}籍" if nationality and not nationality.endswith("籍") else nationality
+    desired_rows = len(crew) + 2
+    while len(table.rows) > desired_rows:
+        table._tbl.remove(table.rows[-1]._tr)
+    while len(table.rows) < desired_rows:
+        _copy_table_row(table)
+    for index, person in enumerate(crew, start=1):
+        values = [
+            _exit_stamp_sequence(person, index),
+            person.name,
+            person.gender,
+            person.nationality,
+            _date_text(person.birth_date, "-"),
+            person.document_no,
+            _crew_document_type(person),
+            "",
+        ]
+        for cell, value in zip(table.rows[index + 1].cells, values):
+            cell.text = _text(value)
+    output = EXPORT_DIR / f"出境章申请_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.docx"
     document.save(output)
     return output
 

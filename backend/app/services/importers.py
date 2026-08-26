@@ -35,6 +35,7 @@ def _header_map(headers):
         "rank": ("职务", "职别", "rank"),
         "birth_date": ("出生日期", "date of birth"),
         "document_no": ("证件号", "证书号", "证件号码", "passport"),
+        "document_type": ("证件类别", "证件类型", "证件种类", "identity type", "document type", "passport type"),
     }
     mapped = {}
     for key, options in aliases.items():
@@ -80,6 +81,9 @@ def parse_crew_file(path: str):
             "rank": clean_code(row[mapping["rank"]]) if "rank" in mapping else None,
             "birth_date": excel_date(row[mapping["birth_date"]]) if "birth_date" in mapping else None,
             "document_no": str(row[mapping["document_no"]]).strip() if "document_no" in mapping and row[mapping["document_no"]] not in (None, "") else None,
-            "extra": {"raw_row": [str(x) for x in row]},
+            "extra": {
+                "raw_row": [str(x) for x in row],
+                "document_type": clean_code(row[mapping["document_type"]]) if "document_type" in mapping and row[mapping["document_type"]] not in (None, "") else None,
+            },
         })
     return members, {"source_type": extension[1:], "header_row": header_index}
