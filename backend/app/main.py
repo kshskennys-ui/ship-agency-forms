@@ -1,6 +1,7 @@
 import json
 import shutil
 import tempfile
+from datetime import date
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
@@ -9,14 +10,16 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
-from .db import Base, engine, get_db
-from .models import CrewChangePerson, CrewManifest, CrewMember, ExitStampApplicant, Forecast, TemporaryEntryApplicant, TonnageApplication, Vessel, Voyage
+from .db import Base, SessionLocal, engine, get_db
+from .models import AppSetting, CrewChangePerson, CrewManifest, CrewMember, ExitStampApplicant, Forecast, PreferentialCountry, SeafarerVerification, TemporaryEntryApplicant, TonnageApplication, Vessel, Voyage
 from .paths import FRONTEND_DIR
-from .schemas import CrewChangeCreate, CrewChangePersonUpdate, ExitStampApplicantCreate, TextExtractRequest, TemporaryEntryApplicantCreate, TonnageCreate, VesselCreate, VoyageCreate, VoyageUpdate
+from .schemas import CrewChangeCreate, CrewChangePersonUpdate, ExitStampApplicantCreate, PreferentialCountryCreate, TextExtractRequest, TemporaryEntryApplicantCreate, TonnageCreate, VesselCreate, VoyageCreate, VoyageUpdate
 from .services.forecast import berth_text, generate_forecast, normalize_port
 from .services.importers import parse_crew_file
 from .services.exporters import export_border_inspection, export_crew_change, export_crew_change_customs, export_exit_stamp_application, export_health_declaration, export_inbound_form, export_maritime_preapproval, export_outer_field_receipt, export_temporary_entry, export_tonnage
 from .services.text_extractor import parse_fixed_text
+from .services.seafarer_verifier import crew_verification_row, current_job, eligibility, start_job, stop_job
+from .services.tonnage_rates import PREFERENTIAL_COUNTRIES, build_tonnage_text, calculate_tonnage_quote, decimal_text, normalize_country_name
 
 
 Base.metadata.create_all(engine)
@@ -29,9 +32,36 @@ def _ensure_schema():
         with engine.begin() as connection:
             default_value = "FALSE" if engine.dialect.name == "postgresql" else "0"
             connection.execute(text(f"ALTER TABLE voyages ADD COLUMN customs_inspection BOOLEAN NOT NULL DEFAULT {default_value}"))
+    tonnage_columns = {column["name"] for column in inspect(engine).get_columns("tonnage_applications")}
+    tonnage_additions = {
+        "unit_price": "VARCHAR(32)",
+        "tax_type": "VARCHAR(32)",
+        "net_tonnage": "INTEGER",
+        "generated_text": "TEXT",
+    }
+    missing_tonnage_columns = {name: definition for name, definition in tonnage_additions.items() if name not in tonnage_columns}
+    if missing_tonnage_columns:
+        with engine.begin() as connection:
+            for name, definition in missing_tonnage_columns.items():
+                connection.execute(text(f"ALTER TABLE tonnage_applications ADD COLUMN {name} {definition}"))
 
 
 _ensure_schema()
+
+
+def _seed_preferential_countries():
+    """首次初始化优惠国家；后续允许用户删空，不因重启自动恢复。"""
+    with SessionLocal() as db:
+        marker = db.get(AppSetting, "preferential_countries_seeded")
+        if marker:
+            return
+        if not db.scalars(select(PreferentialCountry)).first():
+            db.add_all(PreferentialCountry(name=name) for name in sorted(PREFERENTIAL_COUNTRIES))
+        db.add(AppSetting(key="preferential_countries_seeded", value="1"))
+        db.commit()
+
+
+_seed_preferential_countries()
 app = FastAPI(title="船代业务表单系统", version="0.1.0")
 
 
@@ -53,6 +83,39 @@ def voyage_dict(item):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "ship-agency-mvp"}
+
+
+def preferential_country_names(db: Session):
+    return {item.name for item in db.scalars(select(PreferentialCountry).order_by(PreferentialCountry.name)).all()}
+
+
+@app.get("/api/settings/preferential-countries")
+def list_preferential_countries(db: Session = Depends(get_db)):
+    return [{"id": item.id, "name": item.name} for item in db.scalars(select(PreferentialCountry).order_by(PreferentialCountry.name)).all()]
+
+
+@app.post("/api/settings/preferential-countries")
+def add_preferential_country(payload: PreferentialCountryCreate, db: Session = Depends(get_db)):
+    name = normalize_country_name(payload.name)
+    if not name:
+        raise HTTPException(400, "国家名不能为空")
+    if db.scalars(select(PreferentialCountry).where(PreferentialCountry.name == name)).first():
+        raise HTTPException(409, "该国家已在优惠国家名单中")
+    item = PreferentialCountry(name=name)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, "name": item.name}
+
+
+@app.delete("/api/settings/preferential-countries/{country_id}")
+def delete_preferential_country(country_id: int, db: Session = Depends(get_db)):
+    item = db.get(PreferentialCountry, country_id)
+    if not item:
+        raise HTTPException(404, "优惠国家不存在")
+    db.delete(item)
+    db.commit()
+    return {"ok": True, "id": country_id}
 
 
 @app.post("/api/text-extract/parse")
@@ -116,6 +179,9 @@ def update_vessel(vessel_id: int, payload: VesselCreate, db: Session = Depends(g
 
 def remove_voyage_records(db: Session, voyage_id: int):
     """删除航次及其关联业务记录，供航次删除和船舶级联删除共用。"""
+    verifications = db.scalars(select(SeafarerVerification).where(SeafarerVerification.voyage_id == voyage_id)).all()
+    for verification in verifications:
+        db.delete(verification)
     manifests = db.scalars(select(CrewManifest).where(CrewManifest.voyage_id == voyage_id)).all()
     for manifest in manifests:
         crew_members = db.scalars(select(CrewMember).where(CrewMember.manifest_id == manifest.id)).all()
@@ -279,6 +345,95 @@ def import_crew(voyage_id: int, file: UploadFile = File(...), db: Session = Depe
     return {"manifest_id": manifest.id, "version": manifest.version, "count": len(members), "meta": meta}
 
 
+def _seafarer_verification_rows(db: Session, voyage_id: int):
+    manifest = _latest_manifest(db, voyage_id)
+    if not manifest:
+        return []
+    members = db.scalars(
+        select(CrewMember).where(CrewMember.manifest_id == manifest.id).order_by(CrewMember.id)
+    ).all()
+    verifications = db.scalars(
+        select(SeafarerVerification).where(SeafarerVerification.voyage_id == voyage_id)
+    ).all()
+    by_member_id = {item.crew_member_id: item for item in verifications}
+    return [crew_verification_row(member, by_member_id.get(member.id)) for member in members]
+
+
+@app.get("/api/voyages/{voyage_id}/seafarer-verification")
+def get_seafarer_verification(voyage_id: int, db: Session = Depends(get_db)):
+    if not db.get(Voyage, voyage_id):
+        raise HTTPException(404, "航次不存在")
+    rows = _seafarer_verification_rows(db, voyage_id)
+    eligible_rows = [row for row in rows if row["eligible"]]
+    job = current_job(voyage_id)
+    return {
+        "items": rows,
+        "eligible_count": len(eligible_rows),
+        "completed_count": sum(1 for row in eligible_rows if row["status"] in {"有效", "无效"}),
+        "job": job,
+    }
+
+
+@app.post("/api/voyages/{voyage_id}/seafarer-verification/start")
+def start_seafarer_verification(voyage_id: int, db: Session = Depends(get_db)):
+    voyage = db.get(Voyage, voyage_id)
+    if not voyage:
+        raise HTTPException(404, "航次不存在")
+    existing_job = current_job(voyage_id)
+    if existing_job and existing_job["status"] in {"排队中", "查询中"}:
+        return existing_job
+    manifest = _latest_manifest(db, voyage_id)
+    if not manifest:
+        raise HTTPException(400, "请先导入船员名单")
+    members = db.scalars(
+        select(CrewMember).where(CrewMember.manifest_id == manifest.id).order_by(CrewMember.id)
+    ).all()
+    eligible_members = [member for member in members if eligibility(member)[0]]
+    if not eligible_members:
+        raise HTTPException(400, "当前名单中没有可自动核验的中国籍海员证人员")
+
+    rows = []
+    for member in eligible_members:
+        verification = db.scalars(
+            select(SeafarerVerification).where(
+                SeafarerVerification.voyage_id == voyage_id,
+                SeafarerVerification.crew_member_id == member.id,
+            )
+        ).first()
+        if not verification:
+            verification = SeafarerVerification(voyage_id=voyage_id, crew_member_id=member.id)
+            db.add(verification)
+        verification.status = "待查询"
+        verification.website_certificate_no = None
+        verification.website_name = None
+        verification.certificate_status = None
+        verification.issuing_authority = None
+        verification.issue_date = None
+        verification.valid_date = None
+        verification.error_info = None
+        verification.attempts = 0
+        verification.queried_at = None
+        rows.append({
+            "crew_member_id": member.id,
+            "name": member.name,
+            "nationality": member.nationality,
+            "rank": member.rank,
+            "document_no": member.document_no,
+        })
+    db.commit()
+    return start_job(voyage_id, rows)
+
+
+@app.post("/api/voyages/{voyage_id}/seafarer-verification/stop")
+def stop_seafarer_verification(voyage_id: int, db: Session = Depends(get_db)):
+    if not db.get(Voyage, voyage_id):
+        raise HTTPException(404, "航次不存在")
+    job = stop_job(voyage_id)
+    if not job:
+        raise HTTPException(400, "当前没有正在运行的海员证核验任务")
+    return job
+
+
 @app.post("/api/voyages/{voyage_id}/crew-change")
 def create_crew_change(voyage_id: int, payload: CrewChangeCreate, db: Session = Depends(get_db)):
     voyage = db.get(Voyage, voyage_id)
@@ -416,19 +571,94 @@ def delete_exit_stamp_applicant(applicant_id: int, db: Session = Depends(get_db)
 
 @app.post("/api/voyages/{voyage_id}/tonnage")
 def save_tonnage(voyage_id: int, payload: TonnageCreate, db: Session = Depends(get_db)):
-    if not db.get(Voyage, voyage_id):
+    voyage = db.get(Voyage, voyage_id)
+    if not voyage:
         raise HTTPException(404, "航次不存在")
+    vessel = db.get(Vessel, voyage.vessel_id)
+    if not vessel:
+        raise HTTPException(400, "当前航次未绑定船舶档案")
+    if not payload.purchase_date:
+        raise HTTPException(400, "请填写吨税起购日期")
+    try:
+        quote = calculate_tonnage_quote(vessel.nationality, vessel.net_tonnage, payload.duration_days, preferential_country_names(db))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     item = db.scalars(select(TonnageApplication).where(TonnageApplication.voyage_id == voyage_id)).first()
     if not item:
         item = TonnageApplication(voyage_id=voyage_id)
         db.add(item)
-    item.amount = payload.amount
+    item.amount = decimal_text(quote["total_amount"])
+    item.unit_price = decimal_text(quote["unit_price"])
+    item.tax_type = quote["tax_type"]
+    item.net_tonnage = int(vessel.net_tonnage)
+    item.generated_text = build_tonnage_text(vessel, voyage, payload.purchase_date, quote)
     item.pre_entry_no = payload.pre_entry_no
     item.duration_days = payload.duration_days
     item.purchase_date = payload.purchase_date
     item.charter_relation = payload.charter_relation
     db.commit()
-    return {"ok": True, "id": item.id}
+    return {
+        "ok": True,
+        "id": item.id,
+        "amount": item.amount,
+        "unit_price": item.unit_price,
+        "tax_type": item.tax_type,
+        "net_tonnage": item.net_tonnage,
+        "generated_text": item.generated_text,
+    }
+
+
+@app.get("/api/voyages/{voyage_id}/tonnage")
+def get_tonnage(voyage_id: int, db: Session = Depends(get_db)):
+    voyage = db.get(Voyage, voyage_id)
+    if not voyage:
+        raise HTTPException(404, "航次不存在")
+    item = db.scalars(select(TonnageApplication).where(TonnageApplication.voyage_id == voyage_id)).first()
+    if not item:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "amount": item.amount,
+        "unit_price": item.unit_price,
+        "tax_type": item.tax_type,
+        "net_tonnage": item.net_tonnage,
+        "pre_entry_no": item.pre_entry_no,
+        "duration_days": item.duration_days,
+        "purchase_date": item.purchase_date.isoformat() if item.purchase_date else None,
+        "charter_relation": item.charter_relation,
+        "generated_text": item.generated_text,
+    }
+
+
+@app.get("/api/voyages/{voyage_id}/tonnage-quote")
+def get_tonnage_quote(voyage_id: int, duration_days: int | None = None, purchase_date: date | None = None, db: Session = Depends(get_db)):
+    voyage = db.get(Voyage, voyage_id)
+    if not voyage:
+        raise HTTPException(404, "航次不存在")
+    vessel = db.get(Vessel, voyage.vessel_id)
+    if not vessel:
+        raise HTTPException(400, "当前航次未绑定船舶档案")
+    try:
+        quote = calculate_tonnage_quote(vessel.nationality, vessel.net_tonnage, duration_days, preferential_country_names(db))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    generated_text = build_tonnage_text(vessel, voyage, purchase_date, quote) if purchase_date else None
+    return {
+        "vessel_chinese_name": vessel.chinese_name,
+        "vessel_english_name": vessel.english_name,
+        "vessel_nationality": vessel.nationality,
+        "inbound_voyage_no": voyage.inbound_voyage_no,
+        "net_tonnage": vessel.net_tonnage,
+        "tax_type": quote["tax_type"],
+        "preferential": quote["preferential"],
+        "tier_index": quote["tier_index"],
+        "tonnage_tier": quote["tier"],
+        "duration_days": quote["duration_days"],
+        "duration_text": quote["duration_text"],
+        "unit_price": decimal_text(quote["unit_price"]),
+        "total_amount": decimal_text(quote["total_amount"]),
+        "generated_text": generated_text,
+    }
 
 
 @app.get("/api/voyages/{voyage_id}/export/tonnage")
@@ -660,7 +890,7 @@ def summary(voyage_id: int, db: Session = Depends(get_db)):
         "captain": next((x.name for x in crew if (x.rank or "").lower() in {"船长", "master", "1-船长"}), None),
         "nationality_stats": dict(Counter(x.nationality or "待人工填写" for x in crew)),
         "gender_stats": dict(Counter(x.gender or "待人工填写" for x in crew)), "crew": crew_rows, "crew_change": change_rows, "temporary_entry": temporary_entry_rows, "exit_stamp": exit_stamp_rows, "summary_keywords": summary_keywords,
-        "tonnage": {"amount": tonnage.amount, "pre_entry_no": tonnage.pre_entry_no, "duration_days": tonnage.duration_days, "purchase_date": tonnage.purchase_date.isoformat() if tonnage.purchase_date else None} if tonnage else None,
+        "tonnage": {"amount": tonnage.amount, "unit_price": tonnage.unit_price, "tax_type": tonnage.tax_type, "net_tonnage": tonnage.net_tonnage, "pre_entry_no": tonnage.pre_entry_no, "duration_days": tonnage.duration_days, "purchase_date": tonnage.purchase_date.isoformat() if tonnage.purchase_date else None, "generated_text": tonnage.generated_text} if tonnage else None,
         "latest_forecast": {"content": latest.content, "missing_fields": json.loads(latest.missing_fields_json), "version": latest.version} if latest else None,
     }
 

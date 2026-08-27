@@ -82,10 +82,18 @@ class CrewChangePersonUpdate(CrewChangePersonCreate):
 
 class TonnageCreate(BaseModel):
     amount: Optional[str] = None
+    unit_price: Optional[str] = None
+    tax_type: Optional[str] = None
+    net_tonnage: Optional[int] = None
+    generated_text: Optional[str] = None
     pre_entry_no: Optional[str] = None
     duration_days: Optional[int] = None
     purchase_date: Optional[date] = None
     charter_relation: Optional[str] = None
+
+
+class PreferentialCountryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
 
 
 class VoyageSummary(BaseModel):

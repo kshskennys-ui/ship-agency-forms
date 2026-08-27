@@ -1,20 +1,25 @@
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 
 ROOT = Path(SPECPATH).parent
 hiddenimports = (
     collect_submodules("rapidocr_onnxruntime")
     + collect_submodules("onnxruntime")
+    + collect_submodules("ddddocr")
+    + collect_submodules("playwright")
     + collect_submodules("uvicorn")
 )
+
+datas = collect_data_files("ddddocr") + collect_data_files("playwright")
+binaries = collect_dynamic_libs("onnxruntime")
 
 a = Analysis(
     [str(ROOT / "installer" / "server.py")],
     pathex=[str(ROOT / "backend")],
-    binaries=[],
-    datas=[],
+    binaries=binaries,
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

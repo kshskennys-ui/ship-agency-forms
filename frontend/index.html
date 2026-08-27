@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>船代业务表单系统</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260825-15" />
+  <link rel="stylesheet" href="/static/style.css?v=20260827-24" />
 </head>
 <body>
   <main class="shell">
@@ -14,7 +14,7 @@
     </header>
     <section class="grid" id="mainWorkspaceGrid">
       <article class="card"><div class="toolbar"><h2>船舶档案</h2><div class="actions"><button id="newVesselBtn" class="ghost" type="button">新建船舶</button><a class="text-link" href="/vessels">进入船舶档案管理</a></div></div><p class="helper">先选择本次要操作的船舶；保存航次时会自动绑定当前选中的船舶。</p><div class="vessel-selection-panel">
-        <div class="search-row"><input id="vesselSearch" placeholder="按 IMO、中文名或英文名搜索" autocomplete="off" /><select id="vesselSelect" aria-label="搜索结果中的船舶"></select></div>
+        <div class="search-row"><input id="vesselSearch" placeholder="输入完整 IMO、中文名或英文名可自动带入，简称请从下拉选择" autocomplete="off" /><select id="vesselSelect" aria-label="搜索结果中的船舶"></select></div>
       </div><form id="vesselForm" class="form-grid">
         <label>IMO<input name="imo" placeholder="7位IMO，可留空" /></label>
         <label>中文名<input name="chinese_name" /></label>
@@ -40,15 +40,15 @@
       </form><p id="voyageMsg" class="message"></p><div class="embedded-extractor"><div class="toolbar"><h3>航次管理文字提取</h3><span id="voyageTextExtractType" class="status-chip">等待识别</span></div><div class="extract-content"><textarea id="voyageTextExtractInput" class="extract-textarea" rows="5" placeholder="粘贴航次管理固定格式文字，例如：进港航次号、出港航次号、抵港时间"></textarea><div class="actions extract-actions"><button id="parseVoyageTextBtn" class="primary" type="button">识别航次文字</button><button id="clearVoyageTextBtn" class="ghost" type="button">清空</button><button id="applyVoyageTextBtn" class="ghost" type="button" disabled>填入航次管理</button></div><p id="voyageTextExtractMsg" class="message"></p><div id="voyageTextExtractResult" class="extract-result" hidden></div></div></div></article>
     </section>
     <div class="secondary-grid"><section class="card voyage-tools-card"><div class="voyage-tools-header"><div><h2>当前航次工具</h2><p class="section-note">先选择该船航次，再导入船员名单或生成业务单证。</p></div><select id="voyageSelect" aria-label="选择当前航次"></select></div><div class="tool-groups">
-      <div class="tool-group"><div class="tool-group-title">船员名单</div><label class="upload"><span class="upload-title">选择 Excel 文件</span><span class="upload-hint">支持 .xlsx / .xls</span><input id="crewFile" type="file" accept=".xls,.xlsx" /></label></div>
+      <div class="tool-group"><div class="tool-group-title">船员名单</div><label class="upload"><span class="upload-title">选择 Excel 文件</span><span class="upload-hint">支持 .xlsx / .xls</span><input id="crewFile" type="file" accept=".xls,.xlsx" /></label><div class="verification-toolbar"><span id="seafarerVerificationStatus" class="status-chip">未导入名单</span><button id="seafarerVerifyBtn" class="secondary" type="button" disabled>核验中国籍海员证</button></div><p id="seafarerVerificationMsg" class="message"></p><div class="verification-table-wrap"><table class="verification-table"><thead><tr><th>姓名</th><th>证件号</th><th>核验状态</th><th>证书状态</th><th>有效日期</th></tr></thead><tbody id="seafarerVerificationBody"><tr><td colspan="5" class="muted">导入船员名单后显示</td></tr></tbody></table></div></div>
       <div class="tool-group"><div class="tool-group-title">常用操作</div><div class="tool-actions"><button id="forecastBtn" class="primary">生成预报草稿</button><button id="summaryBtn" class="secondary">查看统计</button></div></div>
       <div class="tool-group export-group"><div class="tool-group-title">业务单证导出</div><div class="tool-actions"><button id="strongGeneralBtn" class="secondary">导出强文献总申</button><button id="customsCargoBtn" class="secondary">导出海关货申</button><button id="tonnageBtn" class="secondary">导出吨税表</button><button id="crewChangeBtn" class="secondary">导出换班表（边检版）</button><button id="crewChangeCustomsBtn" class="secondary">导出换班表（海关版）</button><button id="healthDeclarationBtn" class="secondary">导出体温健康申报表</button><button id="outerFieldReceiptBtn" class="secondary">导出外勤收据</button><button id="borderInspectionBtn" class="secondary">导出边检手续表</button><button id="maritimePreapprovalBtn" class="secondary">导出海事提前审批申请</button><button id="temporaryEntryBtn" class="secondary" disabled>导出临入申请</button><button id="exitStampBtn" class="secondary" disabled>导出出境章申请</button></div></div>
-    </div><p id="toolMsg" class="message"></p><div class="output-header"><span>业务文本预览</span><span class="output-hint">根据当前船舶、航次和船员资料生成</span></div><pre id="output" class="output">请选择航次。</pre></section><section class="card tonnage-card"><h2>吨税申请（可留空人工补录）</h2><form id="tonnageForm" class="form-grid">
-      <label>金额<input name="amount" placeholder="手动输入" /></label><label>预录入号<input name="pre_entry_no" /></label>
+    </div><p id="toolMsg" class="message"></p><div class="output-header"><span>业务文本预览</span><span class="output-hint">根据当前船舶、航次和船员资料生成</span></div><pre id="output" class="output">请选择航次。</pre></section><section class="card tonnage-card"><h2>吨税申请</h2><div id="tonnageAutoInfo" class="tonnage-auto-info">选择航次后自动带入船舶、航次和净吨位信息。</div><form id="tonnageForm" class="form-grid">
+      <label>总金额（自动计算）<input name="amount" readonly placeholder="选择时长后自动计算" /></label><label>预录入号<input name="pre_entry_no" /></label>
       <label>购买时长<select name="duration_days"><option value="">待选择</option><option value="30">30天</option><option value="90">90天</option><option value="365">一年</option></select></label>
-      <label>购买日期<input name="purchase_date" type="date" /></label><label>购买日期（手动输入）<input id="purchaseDateManual" type="text" inputmode="numeric" placeholder="20030511" /></label><label>租用关系<input name="charter_relation" value="其他" /></label>
+      <label>起购日期<input name="purchase_date" type="date" /></label><label>起购日期（手动输入）<input id="purchaseDateManual" type="text" inputmode="numeric" placeholder="20030511" /></label><label>租用关系<input name="charter_relation" value="其他" /></label>
       <button class="primary" type="submit">保存吨税信息</button>
-    </form><p id="tonnageMsg" class="message"></p></section></div>
+    </form><div id="tonnageTextBox" class="tonnage-text-box"><div class="tonnage-text-title">吨税说明文字</div><pre id="tonnageTextPreview">选择起购日期和购买时长后自动生成。</pre><div id="tonnageQuoteDetails" class="tonnage-quote-details" aria-live="polite"></div></div><div id="tonnageRateTableBox" class="tonnage-rate-table-box"><div class="tonnage-text-title">吨税税目税率表 <span id="tonnageRateTableMark" class="rate-table-mark">待计算</span></div><div class="tonnage-rate-table-wrap"><table class="tonnage-rate-table"><thead><tr><th rowspan="2">税目<br>（按船舶净吨位划分）</th><th colspan="3">普通税率（元/净吨）</th><th colspan="3">优惠税率（元/净吨）</th></tr><tr><th>1年</th><th>90日</th><th>30日</th><th>1年</th><th>90日</th><th>30日</th></tr></thead><tbody><tr data-tier-index="0"><th>不超过2000净吨</th><td data-rate-type="ordinary" data-duration="365">12.6</td><td data-rate-type="ordinary" data-duration="90">4.2</td><td data-rate-type="ordinary" data-duration="30">2.1</td><td data-rate-type="preferential" data-duration="365">9.0</td><td data-rate-type="preferential" data-duration="90">3.0</td><td data-rate-type="preferential" data-duration="30">1.5</td></tr><tr data-tier-index="1"><th>超过2000净吨，但不超过10000净吨</th><td data-rate-type="ordinary" data-duration="365">24.0</td><td data-rate-type="ordinary" data-duration="90">8.0</td><td data-rate-type="ordinary" data-duration="30">4.0</td><td data-rate-type="preferential" data-duration="365">17.4</td><td data-rate-type="preferential" data-duration="90">5.8</td><td data-rate-type="preferential" data-duration="30">2.9</td></tr><tr data-tier-index="2"><th>超过10000净吨，但不超过50000净吨</th><td data-rate-type="ordinary" data-duration="365">27.6</td><td data-rate-type="ordinary" data-duration="90">9.2</td><td data-rate-type="ordinary" data-duration="30">4.6</td><td data-rate-type="preferential" data-duration="365">19.8</td><td data-rate-type="preferential" data-duration="90">6.6</td><td data-rate-type="preferential" data-duration="30">3.3</td></tr><tr data-tier-index="3"><th>超过50000净吨</th><td data-rate-type="ordinary" data-duration="365">31.8</td><td data-rate-type="ordinary" data-duration="90">10.6</td><td data-rate-type="ordinary" data-duration="30">5.3</td><td data-rate-type="preferential" data-duration="365">22.8</td><td data-rate-type="preferential" data-duration="90">7.6</td><td data-rate-type="preferential" data-duration="30">3.8</td></tr></tbody></table></div></div><p id="tonnageMsg" class="message"></p></section></div>
     <section class="card section-disclosure"><div class="toolbar"><h2>船员换班与人员申请</h2><span id="crewRosterMsg" class="status-chip"></span></div>
       <div class="crew-panels">
         <article class="subcard"><h3>下船人员</h3><p class="helper">从当前航次入港船员名单中选择，加入名单后可继续添加多人。</p>
@@ -93,5 +93,5 @@
       </div>
     </section>
   </main>
-  <script src="/static/app.js?v=20260825-15"></script>
+  <script src="/static/app.js?v=20260827-24"></script>
 </body></html>

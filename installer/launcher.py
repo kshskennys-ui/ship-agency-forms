@@ -43,6 +43,7 @@ def main():
                 "SHIP_AGENCY_TEMPLATE_DIR": str(ROOT / "templates"),
                 "SHIP_AGENCY_FRONTEND_DIR": str(ROOT / "frontend"),
                 "SHIP_AGENCY_NODE": str(ROOT / "runtime" / "node" / "node.exe"),
+                "PLAYWRIGHT_BROWSERS_PATH": str(ROOT / "runtime" / "playwright-browsers"),
             }
         )
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)

@@ -11,6 +11,8 @@ node_modules/
 *.inspect.ndjson
 qa/
 health_*_preview.png
+outputs/
+temp_spreadsheet_work/
 installer/build/
 installer/staging/
 installer/release/

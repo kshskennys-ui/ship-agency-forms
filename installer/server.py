@@ -9,6 +9,7 @@ os.environ.setdefault("SHIP_AGENCY_DATA_DIR", str(ROOT / "data"))
 os.environ.setdefault("SHIP_AGENCY_TEMPLATE_DIR", str(ROOT / "templates"))
 os.environ.setdefault("SHIP_AGENCY_FRONTEND_DIR", str(ROOT / "frontend"))
 os.environ.setdefault("SHIP_AGENCY_NODE", str(ROOT / "runtime" / "node" / "node.exe"))
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(ROOT / "runtime" / "playwright-browsers"))
 
 sys.path.insert(0, str(ROOT / "backend"))
 

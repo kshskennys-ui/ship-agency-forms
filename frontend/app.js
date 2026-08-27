@@ -39,12 +39,16 @@ function bindDateInput(selector) {
 let currentVoyageId = null;
 let voyageDirty = false;
 let currentCrew = [];
+let crewLoadToken = 0;
+let loadedCrewVoyageId = null;
 let imoLookupTimer = null;
 let savedCrewChanges = [];
 let pendingDownCrew = [];
 let pendingUpCrew = [];
 let temporaryEntryApplicants = [];
 let exitStampApplicants = [];
+let seafarerVerification = {items: [], job: null};
+let seafarerPollTimer = null;
 let editingDownChangeId = null;
 let editingUpChangeId = null;
 let currentVoyages = [];
@@ -110,6 +114,7 @@ function updateToolAvailability() {
   for (const id of ['crewFile', 'forecastBtn', 'summaryBtn', 'strongGeneralBtn', 'customsCargoBtn', 'tonnageBtn', 'crewChangeBtn', 'crewChangeCustomsBtn', 'healthDeclarationBtn', 'outerFieldReceiptBtn', 'borderInspectionBtn', 'maritimePreapprovalBtn']) {
     if ($(id)) $(id).disabled = !enabled;
   }
+  if (!enabled && $('seafarerVerifyBtn')) $('seafarerVerifyBtn').disabled = true;
 }
 
 function updateVesselLockUI() {
@@ -142,8 +147,14 @@ function renderVesselOptions(keyword = '') {
     ? matches.map(vessel => `<option value="${vessel.id}">${vessel.id}｜${vessel.chinese_name || ''} ${vessel.english_name || ''}｜IMO ${vessel.imo || '未填写'}</option>`).join('')
     : '<option value="">没有匹配的船舶</option>';
   if (matches.some(vessel => String(vessel.id) === currentId)) select.value = currentId;
-  else if (matches.length === 1) select.value = String(matches[0].id);
-  else select.value = '';
+  else {
+    const exactMatch = matches.length === 1 && [matches[0].chinese_name, matches[0].english_name, matches[0].imo]
+      .some(value => String(value || '').trim().toLowerCase() === key);
+    if (exactMatch) {
+      select.value = String(matches[0].id);
+      if (String(matches[0].id) !== currentId) select.dispatchEvent(new Event('change', {bubbles: true}));
+    } else select.value = '';
+  }
 }
 
 function setVoyageEditMode(voyage) {
@@ -200,28 +211,301 @@ async function refresh(preferredVoyageId = null) {
   await loadCrewOptions();
 }
 
+function verificationStatusClass(status) {
+  if (status === '有效') return 'verification-status-valid';
+  if (status === '无效' || status === '失败') return 'verification-status-invalid';
+  if (status === '重试中' || status === '查询中') return 'verification-status-retry';
+  if (status === '不适用') return 'verification-status-na';
+  return 'verification-status-pending';
+}
+
+function renderSeafarerVerification(data = {items: [], job: null, eligible_count: 0, completed_count: 0}) {
+  seafarerVerification = data;
+  const rows = (data.items || []).filter(item => item.eligible);
+  const job = data.job;
+  const running = Boolean(job && ['排队中', '查询中'].includes(job.status));
+  const statusNode = $('seafarerVerificationStatus');
+  if (statusNode) {
+    statusNode.textContent = running
+      ? `核验中 ${job.processed}/${job.total}`
+      : rows.length ? `中国籍海员证 ${data.completed_count || 0}/${rows.length}` : '无可核验人员';
+  }
+  const body = $('seafarerVerificationBody');
+  if (body) {
+    body.innerHTML = rows.length ? rows.map(item => {
+      const status = item.status || '待查询';
+      const title = item.error_info ? ` title="${escapeHtml(item.error_info)}"` : '';
+      return `<tr><td>${escapeHtml(item.name || '')}</td><td>${escapeHtml(item.document_no || '')}</td><td class="${verificationStatusClass(status)}"${title}>${escapeHtml(status)}</td><td>${escapeHtml(item.certificate_status || '')}</td><td>${escapeHtml(item.valid_date || '')}</td></tr>`;
+    }).join('') : '<tr><td colspan="5" class="muted">导入名单后自动识别中国籍海员证人员</td></tr>';
+  }
+  const button = $('seafarerVerifyBtn');
+  const stopping = Boolean(job && job.status === '停止中');
+  if (button) {
+    button.disabled = !currentVoyageId || !rows.length || stopping;
+    button.textContent = running || stopping ? (stopping ? '正在停止…' : '停止核验') : '核验中国籍海员证';
+    button.classList.toggle('danger', running || stopping);
+  }
+  if (job && job.status === '失败') setMsg('seafarerVerificationMsg', `海员证核验任务失败：${job.error || '请检查网络和浏览器环境'}`, true);
+  else if (!running && job && job.status === '已完成') setMsg('seafarerVerificationMsg', `核验完成：${data.completed_count || 0}/${rows.length} 人已返回结果`);
+  else if (!running && job && job.status === '已停止') setMsg('seafarerVerificationMsg', '核验已停止，可再次点击按钮重新核验');
+  else if (!rows.length && currentVoyageId) setMsg('seafarerVerificationMsg', '当前名单中没有中国籍海员证人员');
+  else if (stopping) setMsg('seafarerVerificationMsg', '正在停止当前查询，请稍候');
+  else if (running) setMsg('seafarerVerificationMsg', '正在逐人查询，完成一人后会立即更新状态');
+  else if ($('seafarerVerificationMsg')) $('seafarerVerificationMsg').textContent = '';
+}
+
+async function loadSeafarerVerification() {
+  const voyageId = Number(currentVoyageId) || null;
+  if (seafarerPollTimer) { clearTimeout(seafarerPollTimer); seafarerPollTimer = null; }
+  if (!voyageId) {
+    renderSeafarerVerification();
+    return;
+  }
+  const res = await fetch(`/api/voyages/${voyageId}/seafarer-verification`);
+  if (Number(currentVoyageId) !== voyageId) return;
+  if (!res.ok) {
+    renderSeafarerVerification();
+    return;
+  }
+  const data = await res.json();
+  renderSeafarerVerification(data);
+  if (data.job && ['排队中', '查询中', '停止中'].includes(data.job.status)) {
+    const voyageId = currentVoyageId;
+    seafarerPollTimer = setTimeout(async () => {
+      seafarerPollTimer = null;
+      if (Number(currentVoyageId) === Number(voyageId)) await loadSeafarerVerification();
+    }, 1000);
+  }
+}
+
+function clearCrewViewForVoyageSwitch() {
+  currentCrew = [];
+  savedCrewChanges = [];
+  temporaryEntryApplicants = [];
+  exitStampApplicants = [];
+  loadedCrewVoyageId = null;
+  const select = $('downCrewSelect');
+  if (select) {
+    select.innerHTML = '<option value="">请先读取当前航次船员名单</option>';
+    select.disabled = true;
+  }
+  if ($('crewRosterMsg')) $('crewRosterMsg').textContent = '';
+  renderDownPreview();
+  renderCrewChangeLists();
+  renderTemporaryEntryOptions();
+  renderTemporaryEntryList();
+  renderExitStampOptions();
+  renderExitStampList();
+  renderSeafarerVerification();
+}
+
+function clearTonnageForm() {
+  const form = $('tonnageForm');
+  if (form) form.reset();
+  if ($('purchaseDateManual')) $('purchaseDateManual').value = '';
+  if ($('tonnageAutoInfo')) $('tonnageAutoInfo').textContent = '选择航次后自动带入船舶、航次和净吨位信息。';
+  if ($('tonnageTextPreview')) $('tonnageTextPreview').textContent = '选择起购日期和购买时长后自动生成。';
+  if ($('tonnageQuoteDetails')) $('tonnageQuoteDetails').innerHTML = '';
+}
+
+function renderTonnageQuoteDetails(data = null) {
+  const target = $('tonnageQuoteDetails');
+  if (!target) return;
+  if (!data) {
+    target.innerHTML = '';
+    return;
+  }
+  const details = [
+    ['船舶国籍', data.vessel_nationality || '待填写'],
+    ['是否优惠国家', data.preferential ? '是' : '否'],
+    ['净吨位', data.net_tonnage ?? '待填写'],
+    ['购买天数', data.duration_text || `${data.duration_days || ''}天`],
+    ['吨税单价', `${data.unit_price || ''} 元/净吨`],
+  ];
+  target.innerHTML = details.map(([label, value]) => `<div class="tonnage-quote-detail"><span class="tonnage-quote-detail-label">${label}</span><span class="tonnage-quote-detail-value">${escapeHtml(value)}</span></div>`).join('');
+}
+
+function renderTonnageRateTable(data = null) {
+  const box = $('tonnageRateTableBox');
+  const mark = $('tonnageRateTableMark');
+  if (!box || !mark) return;
+  box.querySelectorAll('.rate-selected').forEach(cell => cell.classList.remove('rate-selected'));
+  box.querySelectorAll('.tier-selected').forEach(row => row.classList.remove('tier-selected'));
+  if (!data) {
+    mark.textContent = '待计算';
+    return;
+  }
+  const tierIndex = Number(data.tier_index);
+  const duration = Number(data.duration_days);
+  const rateType = data.preferential ? 'preferential' : 'ordinary';
+  const row = box.querySelector(`tbody tr[data-tier-index="${tierIndex}"]`);
+  const cell = row?.querySelector(`td[data-rate-type="${rateType}"][data-duration="${duration}"]`);
+  row?.classList.add('tier-selected');
+  cell?.classList.add('rate-selected');
+  mark.textContent = `本次适用：${data.preferential ? '优惠税率' : '原价税率'}｜${data.duration_text}｜${data.unit_price} 元/净吨`;
+}
+
+let preferentialCountryItems = [];
+
+function renderPreferentialCountryList() {
+  const target = $('preferentialCountryList');
+  if (!target) return;
+  target.innerHTML = preferentialCountryItems.length
+    ? preferentialCountryItems.map(item => `<div class="preferential-country-item"><span>${escapeHtml(item.name)}</span><button class="danger small-button" type="button" data-delete-preferential-country="${item.id}">删除</button></div>`).join('')
+    : '<p class="muted">当前没有优惠国家，所有船籍将按原价税率计算。</p>';
+}
+
+async function loadPreferentialCountries() {
+  const target = $('preferentialCountryList');
+  if (target) target.innerHTML = '<span class="muted">正在读取优惠国家名单…</span>';
+  const res = await fetch('/api/settings/preferential-countries');
+  if (!res.ok) {
+    if (target) target.innerHTML = '<span class="message error">优惠国家名单读取失败</span>';
+    return;
+  }
+  preferentialCountryItems = await res.json();
+  renderPreferentialCountryList();
+}
+
+function setupPreferentialCountrySettings() {
+  const card = document.querySelector('.tonnage-card');
+  const title = card?.querySelector('h2');
+  if (!card || !title || $('preferentialCountriesBtn')) return;
+  const header = document.createElement('div');
+  header.className = 'tonnage-header';
+  header.append(title);
+  const openButton = document.createElement('button');
+  openButton.id = 'preferentialCountriesBtn';
+  openButton.className = 'secondary';
+  openButton.type = 'button';
+  openButton.textContent = '优惠国家设置';
+  header.append(openButton);
+  card.prepend(header);
+  const panel = document.createElement('div');
+  panel.id = 'preferentialCountryPanel';
+  panel.className = 'settings-overlay';
+  panel.hidden = true;
+  panel.innerHTML = '<section class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="preferentialCountryTitle"><div class="settings-dialog-header"><h2 id="preferentialCountryTitle">优惠国家设置</h2><button id="closePreferentialCountryBtn" class="secondary" type="button">关闭</button></div><p class="helper">吨税计算会实时读取以下名单。国家名可直接输入中文，也会自动去除代码括号。</p><form id="preferentialCountryForm" class="settings-add-form"><input name="name" placeholder="例如：新加坡" maxlength="128" required /><button class="primary" type="submit">新增国家</button></form><p id="preferentialCountryMsg" class="message"></p><div id="preferentialCountryList" class="preferential-country-list"></div></section>';
+  document.body.append(panel);
+  openButton.addEventListener('click', async () => { panel.hidden = false; await loadPreferentialCountries(); });
+  $('closePreferentialCountryBtn').addEventListener('click', () => { panel.hidden = true; });
+  $('preferentialCountryForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const input = event.target.elements.name;
+    const res = await fetch('/api/settings/preferential-countries', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name: input.value})});
+    if (!res.ok) return setMsg('preferentialCountryMsg', await res.text(), true);
+    input.value = '';
+    await loadPreferentialCountries();
+    await updateTonnageQuote();
+    setMsg('preferentialCountryMsg', '优惠国家已新增');
+  });
+  panel.addEventListener('click', async event => {
+    const button = event.target.closest('[data-delete-preferential-country]');
+    if (!button) return;
+    const res = await fetch(`/api/settings/preferential-countries/${button.dataset.deletePreferentialCountry}`, {method:'DELETE'});
+    if (!res.ok) return setMsg('preferentialCountryMsg', await res.text(), true);
+    await loadPreferentialCountries();
+    await updateTonnageQuote();
+    setMsg('preferentialCountryMsg', '优惠国家已删除');
+  });
+}
+
+function renderTonnageBaseInfo(voyage = null) {
+  const vessel = currentVessels.find(item => item.id === Number(voyage?.vessel_id || selectedVessel()?.id));
+  const info = $('tonnageAutoInfo');
+  if (!info) return;
+  if (!vessel || !voyage) {
+    info.textContent = currentVoyageId ? '正在读取当前航次吨税信息。' : '选择航次后自动带入船舶、航次和净吨位信息。';
+    return;
+  }
+  info.textContent = `船舶：${vessel.chinese_name || ''} / ${vessel.english_name || ''}｜船籍：${vessel.nationality || '待填写'}｜进港航次号：${voyage.inbound_voyage_no || '待填写'}｜净吨位：${vessel.net_tonnage ?? '待填写'}`;
+}
+
+async function updateTonnageQuote() {
+  const voyageId = Number(currentVoyageId) || null;
+  if (!voyageId) return clearTonnageForm();
+  const form = $('tonnageForm');
+  const duration = Number(form.elements.duration_days.value || 0);
+  const purchaseDate = normalizeDateInput(form.elements.purchase_date.value || $('purchaseDateManual').value);
+  const voyage = currentVoyages.find(item => Number(item.id) === Number(currentVoyageId));
+  renderTonnageBaseInfo(voyage);
+  if (!duration || !purchaseDate || !/^\d{4}-\d{2}-\d{2}$/.test(purchaseDate)) {
+    form.elements.amount.value = '';
+    if ($('tonnageTextPreview')) $('tonnageTextPreview').textContent = '选择起购日期和购买时长后自动生成。';
+    renderTonnageQuoteDetails();
+    renderTonnageRateTable();
+    return;
+  }
+  const res = await fetch(`/api/voyages/${voyageId}/tonnage-quote?duration_days=${duration}&purchase_date=${encodeURIComponent(purchaseDate)}`);
+  if (Number(currentVoyageId) !== voyageId) return;
+  if (!res.ok) {
+    form.elements.amount.value = '';
+    if ($('tonnageTextPreview')) $('tonnageTextPreview').textContent = '当前船舶资料不足，暂时无法计算吨税。';
+    renderTonnageQuoteDetails();
+    renderTonnageRateTable();
+    return;
+  }
+  const data = await res.json();
+  form.elements.amount.value = data.total_amount || '';
+  if ($('tonnageAutoInfo')) $('tonnageAutoInfo').textContent = `船舶：${data.vessel_chinese_name || ''} / ${data.vessel_english_name || ''}｜船籍：${data.vessel_nationality || '待填写'}｜进港航次号：${data.inbound_voyage_no || '待填写'}｜净吨位：${data.net_tonnage ?? ''}｜${data.tax_type}｜${data.tonnage_tier}｜单价：${data.unit_price} 元/净吨`;
+  if ($('tonnageTextPreview')) $('tonnageTextPreview').textContent = data.generated_text || '吨税说明文字待生成。';
+  renderTonnageQuoteDetails(data);
+  renderTonnageRateTable(data);
+}
+
+async function loadTonnageApplication(expectedVoyageId = currentVoyageId) {
+  const voyageId = Number(expectedVoyageId) || null;
+  if (!voyageId) return clearTonnageForm();
+  const res = await fetch(`/api/voyages/${voyageId}/tonnage`);
+  if (Number(currentVoyageId) !== voyageId) return;
+  if (!res.ok) return clearTonnageForm();
+  const data = await res.json();
+  const form = $('tonnageForm');
+  if (data.exists) {
+    form.elements.amount.value = data.amount || '';
+    form.elements.pre_entry_no.value = data.pre_entry_no || '';
+    form.elements.duration_days.value = data.duration_days || '';
+    form.elements.purchase_date.value = data.purchase_date || '';
+    $('purchaseDateManual').value = data.purchase_date || '';
+    form.elements.charter_relation.value = data.charter_relation || '其他';
+    if ($('tonnageTextPreview')) $('tonnageTextPreview').textContent = data.generated_text || '选择起购日期和购买时长后自动生成。';
+    renderTonnageRateTable();
+  } else {
+    form.elements.amount.value = '';
+    form.elements.pre_entry_no.value = '';
+    form.elements.duration_days.value = '';
+    form.elements.purchase_date.value = '';
+    $('purchaseDateManual').value = '';
+    form.elements.charter_relation.value = '其他';
+    if ($('tonnageTextPreview')) $('tonnageTextPreview').textContent = '选择起购日期和购买时长后自动生成。';
+    renderTonnageQuoteDetails();
+    renderTonnageRateTable();
+  }
+  await updateTonnageQuote();
+}
+
 async function loadCrewOptions() {
-  if (!currentVoyageId) {
-    currentCrew = []; savedCrewChanges = [];
-    temporaryEntryApplicants = [];
-    exitStampApplicants = [];
-    $('downCrewSelect').innerHTML = '<option value="">请先选择航次</option>';
-    $('downCrewSelect').disabled = true;
-    $('crewRosterMsg').textContent = '';
-    renderTemporaryEntryOptions();
-    renderTemporaryEntryList();
-    renderExitStampOptions();
-    renderExitStampList();
+  const voyageId = Number(currentVoyageId) || null;
+  const requestToken = ++crewLoadToken;
+  if (!voyageId) {
+    clearCrewViewForVoyageSwitch();
+    if ($('downCrewSelect')) $('downCrewSelect').innerHTML = '<option value="">请先选择航次</option>';
+    await loadTonnageApplication();
+    await loadSeafarerVerification();
     updateToolAvailability();
     return;
   }
-  const res = await fetch(`/api/voyages/${currentVoyageId}/summary`);
+  if (loadedCrewVoyageId !== voyageId) clearCrewViewForVoyageSwitch();
+  const res = await fetch(`/api/voyages/${voyageId}/summary`);
+  if (requestToken !== crewLoadToken || Number(currentVoyageId) !== voyageId) return;
   if (!res.ok) {
     $('downCrewSelect').innerHTML = '<option value="">无法读取船员名单</option>';
     $('downCrewSelect').disabled = true;
     return;
   }
-  const data = await res.json(); currentCrew = data.crew || []; savedCrewChanges = data.crew_change || [];
+  const data = await res.json();
+  if (requestToken !== crewLoadToken || Number(currentVoyageId) !== voyageId) return;
+  currentCrew = data.crew || []; savedCrewChanges = data.crew_change || [];
   temporaryEntryApplicants = data.temporary_entry || [];
   exitStampApplicants = data.exit_stamp || [];
   $('downCrewSelect').innerHTML = currentCrew.length
@@ -235,6 +519,11 @@ async function loadCrewOptions() {
   renderTemporaryEntryList();
   renderExitStampOptions();
   renderExitStampList();
+  loadedCrewVoyageId = voyageId;
+  await loadTonnageApplication(voyageId);
+  if (requestToken !== crewLoadToken || Number(currentVoyageId) !== voyageId) return;
+  await loadSeafarerVerification();
+  if (requestToken !== crewLoadToken || Number(currentVoyageId) !== voyageId) return;
   updateToolAvailability();
 }
 
@@ -588,12 +877,32 @@ $('crewFile').addEventListener('change', async (event) => {
   } else setMsg('toolMsg', await res.text(), true);
 });
 
+$('seafarerVerifyBtn').addEventListener('click', async () => {
+  if (!currentVoyageId) return setMsg('seafarerVerificationMsg', '请先保存并选择航次', true);
+  const button = $('seafarerVerifyBtn');
+  button.disabled = true;
+  const job = seafarerVerification.job;
+  const stopping = Boolean(job && ['排队中', '查询中'].includes(job.status));
+  setMsg('seafarerVerificationMsg', stopping ? '正在停止海员证核验，请稍候' : '正在启动海员证核验，请保持页面打开');
+  const action = stopping ? 'stop' : 'start';
+  const res = await fetch(`/api/voyages/${currentVoyageId}/seafarer-verification/${action}`, {method:'POST'});
+  if (!res.ok) {
+    button.disabled = false;
+    return setMsg('seafarerVerificationMsg', await res.text(), true);
+  }
+  await loadSeafarerVerification();
+});
+
 $('tonnageForm').addEventListener('submit', async (event) => {
   event.preventDefault(); if (!currentVoyageId) return setMsg('tonnageMsg', '请先保存航次', true);
   const body = formJSON(event.target); body.duration_days = body.duration_days ? Number(body.duration_days) : null;
   body.purchase_date = nullable(normalizeDateInput(body.purchase_date || $('purchaseDateManual').value));
   const res = await fetch(`/api/voyages/${currentVoyageId}/tonnage`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  setMsg('tonnageMsg', res.ok ? '吨税信息已保存' : await res.text(), !res.ok);
+  if (!res.ok) return setMsg('tonnageMsg', await res.text(), true);
+  const result = await res.json();
+  event.target.elements.amount.value = result.amount || '';
+  $('tonnageTextPreview').textContent = result.generated_text || '';
+  setMsg('tonnageMsg', `吨税信息已保存，${result.tax_type} ${result.unit_price}元/净吨，总金额${result.amount}`);
 });
 
 $('downCrewSelect').addEventListener('change', renderDownPreview);
@@ -666,7 +975,7 @@ $('voyageSelect').addEventListener('change', async event => {
     return setMsg('voyageMsg', '当前航次有未保存修改，请先保存后再切换历史航次', true);
   }
   if (!nextVoyageId) {
-    currentVoyageId = null; editingVoyageId = null; setVoyageEditMode(null); await loadCrewOptions(); updateVesselLockUI(); return;
+    currentVoyageId = null; editingVoyageId = null; setVoyageEditMode(null); clearCrewViewForVoyageSwitch(); await loadCrewOptions(); updateVesselLockUI(); return;
   }
   const selectedVoyage = currentVoyages.find(item => item.id === nextVoyageId);
   if (!selectedVoyage || Number(selectedVoyage.vessel_id) !== Number(lockedVesselId)) {
@@ -674,6 +983,7 @@ $('voyageSelect').addEventListener('change', async event => {
   }
   requestedVoyageId = null;
   currentVoyageId = nextVoyageId; pendingDownCrew = []; pendingUpCrew = []; resetDownEdit(); resetUpEdit();
+  clearCrewViewForVoyageSwitch();
   const voyage = currentVoyages.find(item => item.id === currentVoyageId);
   if (voyage) {
     setVoyageEditMode(voyage);
@@ -706,6 +1016,7 @@ $('vesselSearch').addEventListener('input', event => renderVesselOptions(event.t
     voyageDirty = false;
     isNewVesselMode = false;
     pendingDownCrew = []; pendingUpCrew = []; resetDownEdit(); resetUpEdit();
+    clearCrewViewForVoyageSwitch();
     syncVesselSearch(vessel.id);
     fillVesselForm(vessel);
     await refresh();
@@ -764,13 +1075,17 @@ $('exitStampForm').addEventListener('submit', async event => {
 bindDateInput('#purchaseDateManual, #upCrewForm input[name="birth_date"]');
 const purchaseDateCalendar = $('tonnageForm').elements.purchase_date;
 const purchaseDateManual = $('purchaseDateManual');
+const tonnageDuration = $('tonnageForm').elements.duration_days;
 purchaseDateCalendar.addEventListener('change', () => {
   purchaseDateManual.value = normalizeDateInput(purchaseDateCalendar.value);
+  updateTonnageQuote();
 });
 purchaseDateManual.addEventListener('input', () => {
   const value = normalizeDateInput(purchaseDateManual.value);
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) purchaseDateCalendar.value = value;
+  updateTonnageQuote();
 });
+tonnageDuration.addEventListener('change', updateTonnageQuote);
 document.addEventListener('click', async event => {
   const button = event.target.closest('[data-delete-temporary-entry]');
   if (!button) return;
@@ -817,4 +1132,5 @@ function clearTextExtraction(inputId, resultIds, typeId, messageId, setter) {
 }
 $('clearVesselTextBtn').addEventListener('click', () => clearTextExtraction('vesselTextExtractInput', {result:'vesselTextExtractResult', apply:'applyVesselTextBtn'}, 'vesselTextExtractType', 'vesselTextExtractMsg', value => parsedVesselTextExtraction = value));
 $('clearVoyageTextBtn').addEventListener('click', () => clearTextExtraction('voyageTextExtractInput', {result:'voyageTextExtractResult', apply:'applyVoyageTextBtn'}, 'voyageTextExtractType', 'voyageTextExtractMsg', value => parsedVoyageTextExtraction = value));
+setupPreferentialCountrySettings();
 refresh();

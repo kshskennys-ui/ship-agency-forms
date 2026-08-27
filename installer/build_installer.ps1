@@ -48,6 +48,19 @@ Copy-Item -Path @(
 $exporterStage = Join-Path $staging 'runtime\exporters'
 New-Item -ItemType Directory -Path $exporterStage -Force | Out-Null
 Copy-Item -Path (Join-Path $repo 'backend\app\services\*.mjs') -Destination $exporterStage -Force
+$playwrightStage = Join-Path $staging 'runtime\playwright-browsers'
+New-Item -ItemType Directory -Path $playwrightStage -Force | Out-Null
+$previousBrowsersPath = $env:PLAYWRIGHT_BROWSERS_PATH
+$env:PLAYWRIGHT_BROWSERS_PATH = $playwrightStage
+& $python -m playwright install chromium
+if ($LASTEXITCODE -ne 0) {
+    throw 'Playwright Chromium 下载失败，无法打包海员证查询功能。'
+}
+if ($null -eq $previousBrowsersPath) {
+    Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue
+} else {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $previousBrowsersPath
+}
 $nodeStage = Join-Path $staging 'runtime\node'
 New-Item -ItemType Directory -Path $nodeStage -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $staging 'data') -Force | Out-Null
@@ -99,7 +112,8 @@ foreach ($package in $nodePackages) {
 $isccCandidates = @(
     'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
     'C:\Program Files\Inno Setup 6\ISCC.exe',
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Inno Setup 6\ISCC.exe"
 )
 $iscc = $isccCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $iscc) {

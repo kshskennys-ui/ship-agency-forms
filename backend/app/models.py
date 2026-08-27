@@ -77,6 +77,27 @@ class CrewMember(Base):
     extra_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
+class SeafarerVerification(TimestampMixin, Base):
+    """海员证网站核验结果，按航次和当前船员名单保存。"""
+
+    __tablename__ = "seafarer_verifications"
+    __table_args__ = (UniqueConstraint("voyage_id", "crew_member_id", name="uq_seafarer_verification_crew"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    voyage_id: Mapped[int] = mapped_column(ForeignKey("voyages.id"), index=True)
+    crew_member_id: Mapped[int] = mapped_column(ForeignKey("crew_members.id"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="待查询")
+    website_certificate_no: Mapped[Optional[str]] = mapped_column(String(64))
+    website_name: Mapped[Optional[str]] = mapped_column(String(128))
+    certificate_status: Mapped[Optional[str]] = mapped_column(String(32))
+    issuing_authority: Mapped[Optional[str]] = mapped_column(String(128))
+    issue_date: Mapped[Optional[str]] = mapped_column(String(32))
+    valid_date: Mapped[Optional[str]] = mapped_column(String(32))
+    error_info: Mapped[Optional[str]] = mapped_column(String(256))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    queried_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+
 class CrewChangePerson(Base):
     __tablename__ = "crew_change_people"
 
@@ -120,10 +141,30 @@ class TonnageApplication(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     voyage_id: Mapped[int] = mapped_column(ForeignKey("voyages.id"), index=True)
     amount: Mapped[Optional[str]] = mapped_column(String(32))
+    unit_price: Mapped[Optional[str]] = mapped_column(String(32))
+    tax_type: Mapped[Optional[str]] = mapped_column(String(32))
+    net_tonnage: Mapped[Optional[int]] = mapped_column(Integer)
+    generated_text: Mapped[Optional[str]] = mapped_column(Text)
     pre_entry_no: Mapped[Optional[str]] = mapped_column(String(64))
     duration_days: Mapped[Optional[int]] = mapped_column(Integer)
     purchase_date: Mapped[Optional[date]] = mapped_column(Date)
     charter_relation: Mapped[Optional[str]] = mapped_column(String(64))
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+
+
+class PreferentialCountry(Base):
+    __tablename__ = "preferential_countries"
+    __table_args__ = (UniqueConstraint("name", name="uq_preferential_country_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class Forecast(Base):

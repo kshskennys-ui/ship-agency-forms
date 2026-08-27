@@ -7,6 +7,8 @@
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
+$env:PLAYWRIGHT_BROWSERS_PATH = "$pwd\.playwright-browsers"
+.\.venv\Scripts\python -m playwright install chromium
 $env:PYTHONPATH='backend'
 .\.venv\Scripts\python -m uvicorn app.main:app --reload
 ```
@@ -25,7 +27,9 @@ $env:PYTHONPATH='backend'
 
 安装包生成在 `installer/release/ShipAgencySetup.exe`。目标电脑无需安装 Python、Node.js 或 SQLite，安装后桌面会创建“船代业务系统”快捷方式。业务数据库保存在安装目录下的 `data` 文件夹，卸载程序默认保留该文件夹。
 
-当前实现：船舶档案、航次、`.xls/.xlsx` 船员名单导入、船员统计、换班记录、吨税申请数据保存、预报文本生成。
+当前实现：船舶档案、航次、`.xls/.xlsx` 船员名单导入、船员统计、海员证逐人核验、换班记录、吨税申请数据保存、预报文本生成。
+
+导入船员名单后，当前航次工具会显示中国籍海员证人员。点击“核验中国籍海员证”后，系统以低频率逐人访问海事局查询页面，完成一人后立即在页面显示证件状态、签发机关和有效日期。该功能需要联网，并需要在开发环境安装 Playwright Chromium；安装包构建时也应将对应浏览器运行时一并打包。
 
 ## 界面截图
 
