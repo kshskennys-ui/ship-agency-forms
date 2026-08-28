@@ -49,6 +49,11 @@ let temporaryEntryApplicants = [];
 let exitStampApplicants = [];
 let seafarerVerification = {items: [], job: null};
 let seafarerPollTimer = null;
+const SEAFARER_AGENT_URL = 'http://127.0.0.1:17321';
+let seafarerAgentConnected = false;
+let localSeafarerTaskId = null;
+let localSeafarerPollTimer = null;
+let localSeafarerSyncedIds = new Set();
 let editingDownChangeId = null;
 let editingUpChangeId = null;
 let currentVoyages = [];
@@ -241,7 +246,7 @@ function renderSeafarerVerification(data = {items: [], job: null, eligible_count
   const button = $('seafarerVerifyBtn');
   const stopping = Boolean(job && job.status === '停止中');
   if (button) {
-    button.disabled = !currentVoyageId || !rows.length || stopping;
+    button.disabled = !currentVoyageId || !rows.length || stopping || !seafarerAgentConnected;
     button.textContent = running || stopping ? (stopping ? '正在停止…' : '停止核验') : '核验中国籍海员证';
     button.classList.toggle('danger', running || stopping);
   }
@@ -252,6 +257,119 @@ function renderSeafarerVerification(data = {items: [], job: null, eligible_count
   else if (stopping) setMsg('seafarerVerificationMsg', '正在停止当前查询，请稍候');
   else if (running) setMsg('seafarerVerificationMsg', '正在逐人查询，完成一人后会立即更新状态');
   else if ($('seafarerVerificationMsg')) $('seafarerVerificationMsg').textContent = '';
+}
+
+async function requestSeafarerAgent(path, options = {}) {
+  const request = {...options, headers: {'Content-Type': 'application/json', ...(options.headers || {})}};
+  const res = await fetch(`${SEAFARER_AGENT_URL}${path}`, request);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `本地核验工具请求失败（${res.status}）`);
+  return data;
+}
+
+function updateSeafarerAgentStatus(connected, message = '') {
+  seafarerAgentConnected = connected;
+  const node = $('seafarerAgentStatus');
+  if (node) {
+    node.textContent = message || (connected ? '本地工具已连接' : '本地工具未连接');
+    node.className = `status-chip ${connected ? 'verification-agent-status-ok' : 'verification-agent-status-offline'}`;
+  }
+  const button = $('seafarerAgentCheckBtn');
+  if (button) button.textContent = connected ? '重新检测' : '检测本地工具';
+  if ($('seafarerVerifyBtn') && !localSeafarerTaskId) {
+    const rows = (seafarerVerification.items || []).filter(item => item.eligible);
+    $('seafarerVerifyBtn').disabled = !currentVoyageId || !rows.length || !connected;
+  }
+}
+
+async function checkSeafarerAgent(silent = false) {
+  try {
+    const data = await requestSeafarerAgent('/health');
+    updateSeafarerAgentStatus(true, `本地工具已连接 v${data.version || '1.0'}`);
+    if (!silent) setMsg('seafarerVerificationMsg', '本地核验工具连接正常');
+    return true;
+  } catch (error) {
+    updateSeafarerAgentStatus(false);
+    if (!silent) setMsg('seafarerVerificationMsg', '未检测到本地核验工具，请先下载安装后再核验', true);
+    return false;
+  }
+}
+
+function stopLocalSeafarerPolling() {
+  if (localSeafarerPollTimer) {
+    clearTimeout(localSeafarerPollTimer);
+    localSeafarerPollTimer = null;
+  }
+}
+
+async function stopLocalSeafarerTask() {
+  if (!localSeafarerTaskId) return;
+  try { await requestSeafarerAgent(`/jobs/${encodeURIComponent(localSeafarerTaskId)}/stop`, {method: 'POST', body: '{}'}); }
+  catch (_) { /* 工具关闭时，云端页面仍可继续使用 */ }
+}
+
+function clearLocalSeafarerTask() {
+  stopLocalSeafarerPolling();
+  if (localSeafarerTaskId) stopLocalSeafarerTask();
+  localSeafarerTaskId = null;
+  localSeafarerSyncedIds = new Set();
+}
+
+async function syncLocalSeafarerResult(item) {
+  const memberId = Number(item.crew_member_id);
+  if (!memberId || localSeafarerSyncedIds.has(memberId)) return;
+  const res = await fetch(`/api/voyages/${currentVoyageId}/seafarer-verification/local-result`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(item),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  localSeafarerSyncedIds.add(memberId);
+}
+
+async function pollLocalSeafarerTask() {
+  if (!localSeafarerTaskId) return;
+  try {
+    const job = await requestSeafarerAgent(`/jobs/${encodeURIComponent(localSeafarerTaskId)}`);
+    const finishedItems = (job.items || []).filter(item => item.status && item.status !== '待查询');
+    for (const item of finishedItems) await syncLocalSeafarerResult(item);
+    const existing = new Map((seafarerVerification.items || []).map(item => [Number(item.crew_member_id), item]));
+    for (const item of job.items || []) {
+      const current = existing.get(Number(item.crew_member_id));
+      if (current) Object.assign(current, item, {eligible: true});
+    }
+    const running = ['排队中', '查询中', '停止中'].includes(job.status);
+    renderSeafarerVerification({...seafarerVerification, job});
+    if (running) {
+      localSeafarerPollTimer = setTimeout(pollLocalSeafarerTask, 1000);
+    } else {
+      const finished = job.status === '已完成' || job.status === '已停止';
+      localSeafarerTaskId = null;
+      stopLocalSeafarerPolling();
+      await loadSeafarerVerification();
+      setMsg('seafarerVerificationMsg', finished ? '本机核验完成，结果已同步到云端' : `本机核验失败：${job.error || '请检查本地工具日志'}`, !finished);
+    }
+  } catch (error) {
+    localSeafarerTaskId = null;
+    stopLocalSeafarerPolling();
+    updateSeafarerAgentStatus(false);
+    setMsg('seafarerVerificationMsg', `本地核验同步失败：${error.message}`, true);
+  }
+}
+
+async function startLocalSeafarerTask() {
+  if (!currentVoyageId) return setMsg('seafarerVerificationMsg', '请先保存并选择航次', true);
+  if (!seafarerAgentConnected && !(await checkSeafarerAgent())) return;
+  const rows = (seafarerVerification.items || []).filter(item => item.eligible).map(item => ({
+    crew_member_id: item.crew_member_id, name: item.name, nationality: item.nationality,
+    rank: item.rank, document_no: item.document_no,
+  }));
+  if (!rows.length) return setMsg('seafarerVerificationMsg', '当前名单中没有可核验的中国籍海员证人员', true);
+  localSeafarerSyncedIds = new Set();
+  const task = await requestSeafarerAgent('/verify', {
+    method: 'POST', body: JSON.stringify({task_id: `voyage-${currentVoyageId}-${Date.now()}`, rows}),
+  });
+  localSeafarerTaskId = task.task_id;
+  setMsg('seafarerVerificationMsg', '已调用本机浏览器核验，请保持浏览器窗口打开');
+  await pollLocalSeafarerTask();
 }
 
 async function loadSeafarerVerification() {
@@ -279,6 +397,7 @@ async function loadSeafarerVerification() {
 }
 
 function clearCrewViewForVoyageSwitch() {
+  clearLocalSeafarerTask();
   currentCrew = [];
   savedCrewChanges = [];
   temporaryEntryApplicants = [];
@@ -881,17 +1000,21 @@ $('seafarerVerifyBtn').addEventListener('click', async () => {
   if (!currentVoyageId) return setMsg('seafarerVerificationMsg', '请先保存并选择航次', true);
   const button = $('seafarerVerifyBtn');
   button.disabled = true;
-  const job = seafarerVerification.job;
-  const stopping = Boolean(job && ['排队中', '查询中'].includes(job.status));
-  setMsg('seafarerVerificationMsg', stopping ? '正在停止海员证核验，请稍候' : '正在启动海员证核验，请保持页面打开');
-  const action = stopping ? 'stop' : 'start';
-  const res = await fetch(`/api/voyages/${currentVoyageId}/seafarer-verification/${action}`, {method:'POST'});
-  if (!res.ok) {
+  try {
+    if (localSeafarerTaskId) {
+      setMsg('seafarerVerificationMsg', '正在停止本机海员证核验，请稍候');
+      await stopLocalSeafarerTask();
+      await pollLocalSeafarerTask();
+    } else {
+      await startLocalSeafarerTask();
+    }
+  } catch (error) {
     button.disabled = false;
-    return setMsg('seafarerVerificationMsg', await res.text(), true);
+    setMsg('seafarerVerificationMsg', `无法启动本地核验工具：${error.message}`, true);
   }
-  await loadSeafarerVerification();
 });
+
+$('seafarerAgentCheckBtn').addEventListener('click', () => checkSeafarerAgent());
 
 $('tonnageForm').addEventListener('submit', async (event) => {
   event.preventDefault(); if (!currentVoyageId) return setMsg('tonnageMsg', '请先保存航次', true);
@@ -1134,3 +1257,4 @@ $('clearVesselTextBtn').addEventListener('click', () => clearTextExtraction('ves
 $('clearVoyageTextBtn').addEventListener('click', () => clearTextExtraction('voyageTextExtractInput', {result:'voyageTextExtractResult', apply:'applyVoyageTextBtn'}, 'voyageTextExtractType', 'voyageTextExtractMsg', value => parsedVoyageTextExtraction = value));
 setupPreferentialCountrySettings();
 refresh();
+checkSeafarerAgent(true);

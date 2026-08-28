@@ -1,10 +1,10 @@
 import json
 import shutil
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, select, text
@@ -432,6 +432,40 @@ def stop_seafarer_verification(voyage_id: int, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(400, "当前没有正在运行的海员证核验任务")
     return job
+
+
+@app.post("/api/voyages/{voyage_id}/seafarer-verification/local-result")
+def save_local_seafarer_result(voyage_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    """保存用户电脑本地核验助手返回的单人结果。"""
+    voyage = db.get(Voyage, voyage_id)
+    if not voyage:
+        raise HTTPException(404, "航次不存在")
+    manifest = _latest_manifest(db, voyage_id)
+    if not manifest:
+        raise HTTPException(400, "当前航次没有船员名单")
+    try:
+        member_id = int(payload.get("crew_member_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "核验结果缺少船员编号")
+    member = db.get(CrewMember, member_id)
+    if not member or member.manifest_id != manifest.id or not eligibility(member)[0]:
+        raise HTTPException(400, "核验结果不属于当前航次可核验人员")
+    verification = db.scalars(
+        select(SeafarerVerification).where(
+            SeafarerVerification.voyage_id == voyage_id,
+            SeafarerVerification.crew_member_id == member_id,
+        )
+    ).first()
+    if not verification:
+        verification = SeafarerVerification(voyage_id=voyage_id, crew_member_id=member_id)
+        db.add(verification)
+    allowed_keys = ("status", "website_certificate_no", "website_name", "certificate_status", "issuing_authority", "issue_date", "valid_date", "error_info", "attempts")
+    for key in allowed_keys:
+        if key in payload:
+            setattr(verification, key, payload.get(key))
+    verification.queried_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "crew_member_id": member_id}
 
 
 @app.post("/api/voyages/{voyage_id}/crew-change")

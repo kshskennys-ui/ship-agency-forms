@@ -17,3 +17,6 @@ installer/build/
 installer/staging/
 installer/release/
 installer/test-install-*/
+local_verifier/build/
+local_verifier/staging/
+local_verifier/release/

@@ -32,8 +32,8 @@ if (-not $SkipCompile) {
         Remove-Item -LiteralPath $buildRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
-    & $python -m PyInstaller --noconfirm --clean --distpath $distRoot --workpath (Join-Path $workRoot 'server') $PSScriptRoot\server.spec
-    & $python -m PyInstaller --noconfirm --clean --distpath $distRoot --workpath (Join-Path $workRoot 'launcher') $PSScriptRoot\launcher.spec
+    & $python -m PyInstaller --noconfirm --clean --distpath $distRoot --workpath (Join-Path $workRoot 'server') (Join-Path $PSScriptRoot 'server.spec')
+    & $python -m PyInstaller --noconfirm --clean --distpath $distRoot --workpath (Join-Path $workRoot 'launcher') (Join-Path $PSScriptRoot 'launcher.spec')
 }
 
 Copy-Item -LiteralPath (Join-Path $distRoot 'ShipAgencyServer.exe') -Destination $staging -Force
@@ -121,5 +121,5 @@ if (-not $iscc) {
     exit 0
 }
 
-& $iscc "/DMyPassword=$env:SHIP_AGENCY_INSTALL_PASSWORD" $PSScriptRoot\ShipAgencySetup.iss
+& $iscc "/DMyPassword=$env:SHIP_AGENCY_INSTALL_PASSWORD" (Join-Path $PSScriptRoot 'ShipAgencySetup.iss')
 Write-Output "INSTALLER=$release\ShipAgencySetup.exe"
