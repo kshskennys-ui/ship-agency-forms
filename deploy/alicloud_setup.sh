@@ -37,7 +37,15 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$APP_DIR" --shell /sbin/nologin "$SERVICE_USER"
 fi
 
-DB_PASSWORD="$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 28)"
+# 重复运行部署脚本时沿用已有配置中的密码，避免数据库角色已经更新而
+# 环境文件尚未写回时造成前后端密码不一致。
+DB_PASSWORD=""
+if [[ -f "$ENV_FILE" ]]; then
+  DB_PASSWORD="$(sed -n 's#^DATABASE_URL=postgresql+psycopg://[^:]*:\([^@]*\)@.*#\1#p' "$ENV_FILE" | head -n 1)"
+fi
+if [[ -z "$DB_PASSWORD" ]]; then
+  DB_PASSWORD="$(openssl rand -hex 24)"
+fi
 runuser -u postgres -- psql -v ON_ERROR_STOP=1 --dbname=postgres <<SQL
 DO \$\$
 BEGIN
