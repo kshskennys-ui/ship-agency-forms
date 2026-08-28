@@ -31,6 +31,8 @@ $env:PYTHONPATH='backend'
 
 导入船员名单后，当前航次工具会显示中国籍海员证人员。点击“核验中国籍海员证”后，系统以低频率逐人访问海事局查询页面，完成一人后立即在页面显示证件状态、签发机关和有效日期。该功能需要联网，并需要在开发环境安装 Playwright Chromium；安装包构建时也应将对应浏览器运行时一并打包。
 
+云端部署建议使用 Alibaba Cloud Linux 3 或 Ubuntu LTS，Node.js 仅需安装 `package.json` 中声明的导出依赖；健康申报表导出使用 Python/OpenPyXL，不依赖 Windows 专用组件。生产环境应使用 PostgreSQL，并通过反向代理提供 HTTPS 访问。
+
 ## 界面截图
 
 ![船舶档案管理](docs/screenshots/vessel-management.png)

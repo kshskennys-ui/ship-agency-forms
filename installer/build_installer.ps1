@@ -98,8 +98,7 @@ $nodePackages = @(
     'process-nextick-args',
     'safe-buffer',
     'string_decoder',
-    'util-deprecate',
-    '@oai'
+    'util-deprecate'
 )
 foreach ($package in $nodePackages) {
     $sourcePackage = Join-Path (Join-Path $repo 'node_modules') $package

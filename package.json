@@ -1,0 +1,9 @@
+{
+  "name": "ship-agency-forms-runtime",
+  "private": true,
+  "type": "module",
+  "description": "Node.js dependencies used by ship agency form exporters",
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}

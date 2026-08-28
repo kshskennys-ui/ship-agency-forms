@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+from copy import copy
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
+from openpyxl import load_workbook
 
 from ..paths import EXPORT_DIR, HELPER_DIR, TEMPLATE_DIR
 from .forecast import format_crew_change, normalize_port
@@ -537,29 +539,74 @@ def export_health_declaration(vessel, voyage, crew):
         "symptom_default": "No",
         "crew": crew_rows,
     }
-    bundled_node = Path(r"C:\Users\UA\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe")
-    node_path = os.getenv("SHIP_AGENCY_NODE") or (str(bundled_node) if bundled_node.exists() else None) or shutil.which("node")
-    helper = _helper_path("health_declaration_exporter.mjs")
     template = TEMPLATE_DIR / "health_declaration_template.xlsx"
     output = EXPORT_DIR / f"health_declaration_{voyage.id}_{datetime.now():%Y%m%d%H%M%S}.xlsx"
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as payload_file:
-        json.dump(payload, payload_file, ensure_ascii=False)
-        payload_path = Path(payload_file.name)
-    try:
-        subprocess.run(
-            [node_path, str(helper), str(template), str(output), str(payload_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
+    workbook = load_workbook(template)
+    sheet = workbook["Sheet1"]
+
+    # Keep the fixed six-row header and the original formatting of one data row
+    # plus the two-row signature footer, then rebuild the variable section. This
+    # avoids the Windows-only spreadsheet runtime and works on Linux servers.
+    data_style = [copy(sheet.cell(25, column)._style) for column in range(1, 16)]
+    data_height = sheet.row_dimensions[25].height
+    footer_styles = [
+        [copy(sheet.cell(row, column)._style) for column in range(1, 16)]
+        for row in (27, 28)
+    ]
+    footer_values = [
+        [sheet.cell(row, column).value for column in range(1, 16)]
+        for row in (27, 28)
+    ]
+    footer_heights = [sheet.row_dimensions[row].height for row in (27, 28)]
+
+    for merged in list(sheet.merged_cells.ranges):
+        if merged.max_row >= 7:
+            sheet.unmerge_cells(str(merged))
+    if sheet.max_row >= 7:
+        sheet.delete_rows(7, sheet.max_row - 6)
+
+    data_rows = max(len(crew_rows), 1)
+    data_end_row = 6 + data_rows
+    footer_start = data_end_row + 2
+    for offset in range(data_rows):
+        row = 7 + offset
+        sheet.row_dimensions[row].height = data_height
+        for column in range(1, 16):
+            sheet.cell(row, column)._style = copy(data_style[column - 1])
+        sheet.merge_cells(f"G{row}:I{row}")
+        sheet.merge_cells(f"J{row}:L{row}")
+        sheet.merge_cells(f"M{row}:O{row}")
+
+    for offset in range(2):
+        row = footer_start + offset
+        sheet.row_dimensions[row].height = footer_heights[offset]
+        for column in range(1, 16):
+            cell = sheet.cell(row, column)
+            cell._style = copy(footer_styles[offset][column - 1])
+            cell.value = footer_values[offset][column - 1]
+
+    for index, person in enumerate(crew_rows):
+        row = 7 + index
+        sheet.cell(row, 1).value = index + 1 if person else None
+        sheet.cell(row, 2).value = person["name"] if person else None
+        sheet.cell(row, 3).value = person["document_no"] if person else None
+        sheet.cell(row, 4).value = person["gender"] if person else None
+        sheet.cell(row, 5).value = (
+            datetime.strptime(person["birth_date"], "%Y-%m-%d").date()
+            if person and person.get("birth_date") else None
         )
-    except subprocess.CalledProcessError as exc:
-        message = (exc.stderr or exc.stdout or "未知错误").strip()
-        raise RuntimeError(f"体温和健康申报表生成失败：{message}") from exc
-    finally:
-        payload_path.unlink(missing_ok=True)
+        sheet.cell(row, 5).number_format = "yyyy-mm-dd"
+        sheet.cell(row, 6).value = person["temperature"] if person else None
+        sheet.cell(row, 7).value = payload["recent_places"] if person else None
+        sheet.cell(row, 10).value = payload["contact_default"] if person else None
+        sheet.cell(row, 13).value = payload["symptom_default"] if person else None
+
+    sheet["C2"] = payload["ship_name"]
+    sheet["C3"] = payload["imo"]
+    sheet["C4"] = payload["voyage_number"]
+    sheet["C5"] = datetime.strptime(payload["declaration_date"], "%Y-%m-%d").date()
+    sheet["C5"].number_format = "yyyy-mm-dd"
+    workbook.save(output)
     return output
 
 
