@@ -123,7 +123,10 @@ class SeafarerQueryRunner:
         self.retry_count = max(1, int(os.getenv("SHIP_AGENCY_SEAFARER_RETRY_COUNT", "3")))
         self.interval_seconds = max(0.0, float(os.getenv("SHIP_AGENCY_SEAFARER_INTERVAL_SECONDS", "3")))
         self.rate_limit_wait_seconds = max(1.0, float(os.getenv("SHIP_AGENCY_SEAFARER_RATE_LIMIT_WAIT_SECONDS", "60")))
-        self.headless = _as_bool(os.getenv("SHIP_AGENCY_SEAFARER_HEADLESS"), False)
+        # 云服务器通常没有桌面显示环境，Linux 下必须使用无头模式；
+        # Windows 本地仍保留可见浏览器，便于调试和人工观察验证码页面。
+        default_headless = os.name != "nt"
+        self.headless = _as_bool(os.getenv("SHIP_AGENCY_SEAFARER_HEADLESS"), default_headless)
         self._pw = self._browser = self._context = self._page = None
 
     def run(self, crew_rows: list[dict[str, Any]], on_result: Callable[[dict[str, Any]], None]) -> None:
