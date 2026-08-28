@@ -29,7 +29,7 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 
 DB_PASSWORD="$(openssl rand -base64 32 | tr -dc 'A-Za-z0-9' | head -c 28)"
-sudo -u postgres psql -v ON_ERROR_STOP=1 --dbname=postgres <<SQL
+runuser -u postgres -- psql -v ON_ERROR_STOP=1 --dbname=postgres <<SQL
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$DB_USER') THEN
