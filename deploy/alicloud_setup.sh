@@ -16,7 +16,9 @@ fi
 echo "[1/8] 安装系统依赖"
 dnf install -y git gcc gcc-c++ make libffi-devel openssl-devel zlib-devel bzip2-devel \
   python3.11 python3.11-pip python3.11-devel nodejs npm nginx \
-  postgresql-server postgresql-contrib mesa-libGL
+  postgresql-server postgresql-contrib mesa-libGL \
+  atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage libXfixes libXrandr \
+  libgbm libxkbcommon pango cairo gtk3 alsa-lib nss nspr libXScrnSaver
 
 echo "[2/8] 初始化 PostgreSQL"
 if [[ ! -f /var/lib/pgsql/data/PG_VERSION ]]; then
