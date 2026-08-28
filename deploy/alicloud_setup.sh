@@ -24,28 +24,22 @@ if [[ ! -f /var/lib/pgsql/data/PG_VERSION ]]; then
 fi
 systemctl enable --now postgresql
 
-# Alibaba Cloud Linux 的默认 pg_hba.conf 可能使用 ident/peer，
-# 应用服务通过 DATABASE_URL 使用数据库密码连接，因此先把本机 TCP
-# 连接明确设为密码认证，并放在默认规则之前。
+# 应用服务与 PostgreSQL 在同一台服务器上运行，使用同名系统用户和
+# 数据库用户通过 Unix Socket 认证，避免把数据库密码写入连接 URL。
 PG_HBA="/var/lib/pgsql/data/pg_hba.conf"
 sed -i '/^[[:space:]]*host[[:space:]]\+all[[:space:]]\+all[[:space:]]\+127\.0\.0\.1\/32[[:space:]]/d' "$PG_HBA"
 sed -i '/^[[:space:]]*host[[:space:]]\+all[[:space:]]\+all[[:space:]]\+::1\/128[[:space:]]/d' "$PG_HBA"
 sed -i '1ihost    all             all             127.0.0.1/32            scram-sha-256\nhost    all             all             ::1/128                 scram-sha-256' "$PG_HBA"
+sed -i '/^[[:space:]]*local[[:space:]]\+all[[:space:]]\+shipagency[[:space:]]/d' "$PG_HBA"
+sed -i '1ilocal   all             shipagency                              peer' "$PG_HBA"
 systemctl reload postgresql
 
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$APP_DIR" --shell /sbin/nologin "$SERVICE_USER"
 fi
 
-# 重复运行部署脚本时沿用已有配置中的密码，避免数据库角色已经更新而
-# 环境文件尚未写回时造成前后端密码不一致。
-DB_PASSWORD=""
-if [[ -f "$ENV_FILE" ]]; then
-  DB_PASSWORD="$(sed -n 's#^DATABASE_URL=postgresql+psycopg://[^:]*:\([^@]*\)@.*#\1#p' "$ENV_FILE" | head -n 1)"
-fi
-if [[ -z "$DB_PASSWORD" ]]; then
-  DB_PASSWORD="$(openssl rand -hex 24)"
-fi
+# 仍为数据库角色设置随机密码；应用实际使用同名系统用户的 peer 认证。
+DB_PASSWORD="$(openssl rand -hex 24)"
 runuser -u postgres -- psql -v ON_ERROR_STOP=1 --dbname=postgres <<SQL
 DO \$\$
 BEGIN
@@ -84,7 +78,7 @@ PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/.playwright-browsers" \
 
 cat > "$ENV_FILE" <<EOF
 PYTHONPATH=$APP_DIR/backend
-DATABASE_URL=postgresql+psycopg://$DB_USER:$DB_PASSWORD@127.0.0.1:5432/$DB_NAME
+DATABASE_URL=postgresql+psycopg:///$DB_NAME
 SHIP_AGENCY_ROOT=$APP_DIR
 SHIP_AGENCY_DATA_DIR=$APP_DIR/data
 SHIP_AGENCY_TEMPLATE_DIR=$APP_DIR/templates
