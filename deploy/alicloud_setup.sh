@@ -24,6 +24,15 @@ if [[ ! -f /var/lib/pgsql/data/PG_VERSION ]]; then
 fi
 systemctl enable --now postgresql
 
+# Alibaba Cloud Linux 的默认 pg_hba.conf 可能使用 ident/peer，
+# 应用服务通过 DATABASE_URL 使用数据库密码连接，因此先把本机 TCP
+# 连接明确设为密码认证，并放在默认规则之前。
+PG_HBA="/var/lib/pgsql/data/pg_hba.conf"
+sed -i '/^[[:space:]]*host[[:space:]]\+all[[:space:]]\+all[[:space:]]\+127\.0\.0\.1\/32[[:space:]]/d' "$PG_HBA"
+sed -i '/^[[:space:]]*host[[:space:]]\+all[[:space:]]\+all[[:space:]]\+::1\/128[[:space:]]/d' "$PG_HBA"
+sed -i '1ihost    all             all             127.0.0.1/32            scram-sha-256\nhost    all             all             ::1/128                 scram-sha-256' "$PG_HBA"
+systemctl reload postgresql
+
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$APP_DIR" --shell /sbin/nologin "$SERVICE_USER"
 fi
@@ -105,6 +114,13 @@ systemctl daemon-reload
 systemctl enable --now ship-agency-forms
 
 echo "[7/8] 配置 Nginx"
+# 禁用发行版自带的默认站点（保留为 .disabled，可随时恢复），避免与
+# 本应用的 default_server 发生冲突并导致访问到 Nginx 欢迎页。
+for DEFAULT_CONF in /etc/nginx/conf.d/default.conf /etc/nginx/sites-enabled/default; do
+  if [[ -f "$DEFAULT_CONF" ]]; then
+    mv -f "$DEFAULT_CONF" "${DEFAULT_CONF}.disabled"
+  fi
+done
 cat > /etc/nginx/conf.d/ship-agency-forms.conf <<EOF
 server {
     listen 80 default_server;
