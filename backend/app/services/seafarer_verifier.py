@@ -127,6 +127,13 @@ class SeafarerQueryRunner:
         # Windows 本地仍保留可见浏览器，便于调试和人工观察验证码页面。
         default_headless = os.name != "nt"
         self.headless = _as_bool(os.getenv("SHIP_AGENCY_SEAFARER_HEADLESS"), default_headless)
+        # 海事查询站点会拒绝带有 HeadlessChrome 标识的请求；使用正常
+        # Chrome 的兼容性 UA，不改变查询参数和业务流程。
+        self.user_agent = os.getenv(
+            "SHIP_AGENCY_SEAFARER_USER_AGENT",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+        )
         self._pw = self._browser = self._context = self._page = None
 
     def run(self, crew_rows: list[dict[str, Any]], on_result: Callable[[dict[str, Any]], None]) -> None:
@@ -140,7 +147,9 @@ class SeafarerQueryRunner:
             self._pw = await async_playwright().start()
             self._browser = await self._pw.chromium.launch(headless=self.headless)
             self._context = await self._browser.new_context(
-                viewport={"width": 1280, "height": 800}, locale="zh-CN"
+                viewport={"width": 1280, "height": 800},
+                locale="zh-CN",
+                user_agent=self.user_agent,
             )
             self._page = await self._context.new_page()
             for index, crew in enumerate(crew_rows):
