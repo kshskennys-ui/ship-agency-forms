@@ -921,12 +921,20 @@ $('vesselForm').addEventListener('submit', async (event) => {
   const savedVessel = await res.json();
   extractedVesselExtra = {};
   isNewVesselMode = false;
+  // 新建船舶保存成功后，立即把这条船设为当前操作船舶。
+  // 否则 refresh() 会因 lockedVesselId 仍为空而把航次表单保持为禁用状态，
+  // 用户必须重新切换一次船舶才能新建航次。
+  lockedVesselId = savedVessel.id;
+  currentVoyageId = null;
+  editingVoyageId = null;
+  requestedVoyageId = null;
   await refresh();
   $('vesselSelect').value = String(savedVessel.id);
   syncVesselSearch(savedVessel.id);
   fillVesselForm(savedVessel);
   updateVesselLockUI();
-  setMsg('vesselMsg', `船舶档案已新增：${savedVessel.chinese_name || savedVessel.english_name || savedVessel.imo || ''}；现在可以选择该船并新建航次`);
+  setMsg('vesselMsg', `船舶档案已新增：${savedVessel.chinese_name || savedVessel.english_name || savedVessel.imo || ''}；已自动进入该船航次编辑`);
+  $('voyageForm').elements.inbound_voyage_no?.focus();
 });
 
 $('voyageForm').addEventListener('submit', async (event) => {
