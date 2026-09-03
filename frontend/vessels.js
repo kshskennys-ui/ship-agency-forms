@@ -3,6 +3,7 @@ const formJSON = (form) => Object.fromEntries(new FormData(form).entries());
 const nullable = (value) => value === '' ? null : value;
 let vessels = [];
 let editingId = null;
+let editingExtra = {};
 
 function setMsg(id, text, error = false) {
   const node = $(id); node.textContent = text; node.className = `message ${error ? 'error' : 'success'}`;
@@ -36,7 +37,7 @@ async function loadVessels() {
 }
 
 function resetForm() {
-  editingId = null; $('vesselForm').reset(); $('formTitle').textContent = '新增船舶档案'; setMsg('formMsg', '');
+  editingId = null; editingExtra = {}; $('vesselForm').reset(); $('formTitle').textContent = '新增船舶档案'; setMsg('formMsg', '');
 }
 
 function editVessel(id) {
@@ -44,6 +45,11 @@ function editVessel(id) {
   if (!vessel) return;
   editingId = id; $('formTitle').textContent = `编辑船舶档案 #${id}`;
   for (const key of ['imo','chinese_name','english_name','nationality','call_sign','shipping_company','net_tonnage','gross_tonnage','mmsi']) $('vesselForm').elements[key].value = vessel[key] ?? '';
+  editingExtra = {...(vessel.extra || {})};
+  $('vesselForm').elements.nationality_certificate_no.value = editingExtra.nationality_certificate_no
+    || editingExtra.nationality_certificate_number
+    || editingExtra.registry_certificate_no
+    || '';
   window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});
 }
 
@@ -62,6 +68,12 @@ async function deleteVessel(id) {
 
 $('vesselForm').addEventListener('submit', async event => {
   event.preventDefault(); const body = formJSON(event.target);
+  body.extra = {...editingExtra};
+  const certificateNo = body.nationality_certificate_no.trim();
+  delete body.nationality_certificate_no;
+  delete body.extra.registry_certificate_no;
+  delete body.extra.nationality_certificate_number;
+  if (certificateNo) body.extra.nationality_certificate_no = certificateNo;
   for (const key of ['imo','chinese_name','english_name','nationality','call_sign','shipping_company','mmsi']) body[key] = nullable(body[key]);
   for (const key of ['net_tonnage','gross_tonnage']) body[key] = body[key] ? Number(body[key]) : null;
   const url = editingId ? `/api/vessels/${editingId}` : '/api/vessels';

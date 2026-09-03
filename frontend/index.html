@@ -25,6 +25,7 @@
         <label>净吨位<input name="net_tonnage" type="number" /></label>
         <label>总吨位<input name="gross_tonnage" type="number" /></label>
         <label>MMSI<input name="mmsi" /></label>
+        <label>登记证书/船舶国籍证书编号<input name="nationality_certificate_no" placeholder="例如 56766-25" /></label>
         <button class="primary" type="submit">保存船舶</button>
       </form><p id="vesselMsg" class="message"></p><div class="embedded-extractor"><div class="toolbar"><h3>船舶档案文字提取</h3><span id="vesselTextExtractType" class="status-chip">等待识别</span></div><div class="extract-content"><textarea id="vesselTextExtractInput" class="extract-textarea" rows="5" placeholder="粘贴船舶档案固定格式文字，例如：船舶编号、船舶中文船名、总吨位"></textarea><div class="actions extract-actions"><button id="parseVesselTextBtn" class="primary" type="button">识别船舶文字</button><button id="clearVesselTextBtn" class="ghost" type="button">清空</button><button id="applyVesselTextBtn" class="ghost" type="button" disabled>填入船舶档案</button></div><p id="vesselTextExtractMsg" class="message"></p><div id="vesselTextExtractResult" class="extract-result" hidden></div></div></div></article>
       <article class="card"><div class="toolbar"><h2>本航次</h2><div class="actions"><button id="newVoyageBtn" class="ghost" type="button">新建航次</button><a class="text-link" href="/voyages">进入航次历史管理</a></div></div><p id="voyageResumeMsg" class="helper">请先在左侧船舶档案中选择船舶。</p><form id="voyageForm" class="form-grid">
@@ -93,5 +94,5 @@
       </div>
     </section>
   </main>
-  <script src="/static/app.js?v=20260827-24"></script>
+  <script src="/static/app.js?v=20260902-1"></script>
 </body></html>

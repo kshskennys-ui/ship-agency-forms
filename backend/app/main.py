@@ -172,6 +172,8 @@ def update_vessel(vessel_id: int, payload: VesselCreate, db: Session = Depends(g
             raise HTTPException(409, "该IMO已存在另一条船舶档案，不能重复保存")
     for key, value in data.items():
         setattr(item, key, value)
+    # 船舶证书编号属于档案扩展字段，编辑已有档案时也必须一并保存。
+    item.extra_json = json.dumps(payload.extra, ensure_ascii=False)
     db.commit()
     db.refresh(item)
     return vessel_dict(item)

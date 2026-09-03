@@ -804,6 +804,11 @@ function fillVesselForm(vessel) {
     const input = form.elements[key];
     if (input) input.value = vessel[key] ?? '';
   }
+  const extra = vessel.extra || {};
+  form.elements.nationality_certificate_no.value = extra.nationality_certificate_no
+    || extra.nationality_certificate_number
+    || extra.registry_certificate_no
+    || '';
 }
 
 function fillVesselFormPartial(vessel) {
@@ -812,6 +817,11 @@ function fillVesselFormPartial(vessel) {
     const input = form.elements[key];
     if (input && vessel[key] !== undefined && vessel[key] !== null && vessel[key] !== '') input.value = vessel[key];
   }
+  const extra = vessel.extra || {};
+  const certificateNo = extra.nationality_certificate_no
+    || extra.nationality_certificate_number
+    || extra.registry_certificate_no;
+  if (certificateNo && form.elements.nationality_certificate_no) form.elements.nationality_certificate_no.value = certificateNo;
 }
 
 function fillVoyageFormPartial(voyage) {
@@ -840,9 +850,12 @@ function extractedVesselMatch(vessel) {
 
 function renderTextExtractResult(data, ids) {
   $(ids.type).textContent = data.kind_label;
-  const vesselFields = ['vessel.imo', 'vessel.chinese_name', 'vessel.english_name', 'vessel.nationality', 'vessel.call_sign', 'vessel.net_tonnage', 'vessel.gross_tonnage', 'vessel.mmsi'];
+  const vesselFields = ['vessel.imo', 'vessel.chinese_name', 'vessel.english_name', 'vessel.nationality', 'vessel.call_sign', 'vessel.net_tonnage', 'vessel.gross_tonnage', 'vessel.mmsi', 'vessel_extra.registry_certificate_no', 'vessel_extra.nationality_certificate_no'];
   const voyageFields = ['voyage.inbound_voyage_no', 'voyage.outbound_voyage_no', 'voyage.arrival_time', 'voyage.departure_time', 'voyage.berth', 'voyage.previous_port', 'voyage.next_port', 'voyage.route'];
-  const visibleFields = (data.recognized || []).filter(item => (ids.applyLabel === '填入船舶档案' ? vesselFields : voyageFields).includes(item.field)).slice(0, 8);
+  const matchedFields = (data.recognized || []).filter(item => (ids.applyLabel === '填入船舶档案' ? vesselFields : voyageFields).includes(item.field));
+  const certificateFields = matchedFields.filter(item => item.field.startsWith('vessel_extra.') && item.field.includes('certificate'));
+  const coreFields = matchedFields.filter(item => !certificateFields.includes(item));
+  const visibleFields = [...coreFields.slice(0, certificateFields.length ? 7 : 8), ...certificateFields].slice(0, 8);
   const fields = visibleFields.map(item => `<div class="extract-field"><b>${escapeHtml(item.label)}</b><span>${escapeHtml(item.value)}</span></div>`).join('');
   const summary = visibleFields.length ? `已显示 ${visibleFields.length} 个核心字段` : '核心字段暂无结果';
   $(ids.result).innerHTML = `<div class="extract-section"><h3>${summary}（共识别 ${data.recognized_count} 个）</h3><div class="extract-grid">${fields || '<span class="muted">请直接点击填入按钮，其他字段仍会正常处理</span>'}</div></div><p class="muted">其余字段不在页面展开显示，点击“${ids.applyLabel}”即可填入。</p>`;
@@ -914,6 +927,11 @@ $('vesselForm').addEventListener('submit', async (event) => {
   if (!isNewVesselMode) return setMsg('vesselMsg', '首页已有船舶档案不允许直接修改，请进入船舶档案管理页面编辑', true);
   const body = formJSON(event.target);
   body.extra = {...extractedVesselExtra};
+  const certificateNo = body.nationality_certificate_no.trim();
+  delete body.nationality_certificate_no;
+  delete body.extra.registry_certificate_no;
+  delete body.extra.nationality_certificate_number;
+  if (certificateNo) body.extra.nationality_certificate_no = certificateNo;
   for (const key of ['imo','chinese_name','english_name','nationality','call_sign','shipping_company','mmsi']) body[key] = nullable(body[key]);
   for (const key of ['net_tonnage','gross_tonnage']) body[key] = body[key] ? Number(body[key]) : null;
   const res = await fetch('/api/vessels', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
